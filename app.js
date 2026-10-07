@@ -20,6 +20,9 @@ let recitationActive=false, recitationCompleting=false, lastEyeStats={openMs:0,v
 let eyeCalibrationReady=false;
 let sessionVerificationReady=false;
 let editingTaskId=null;
+let teacherToken=sessionStorage.getItem("teacherToken")||"";
+let studentToken=sessionStorage.getItem("studentToken")||"";
+let cloudSyncTimer=null,suppressCloudSave=false;
 
 function save(){
  localStorage.setItem("v5students",JSON.stringify(students));
@@ -27,10 +30,52 @@ function save(){
  localStorage.setItem("v5records",JSON.stringify(records));
  localStorage.setItem("v53approvals",JSON.stringify(approvals));
  localStorage.setItem("v54passwordResetRequests",JSON.stringify(passwordResetRequests));
+ if(!suppressCloudSave&&teacherLoggedIn&&teacherToken&&window.CloudAPI?.configured()){
+   clearTimeout(cloudSyncTimer);
+   cloudSyncTimer=setTimeout(async()=>{
+     try{
+       await CloudAPI.teacherSaveState(teacherToken,{
+         students:students.map(s=>({id:s.id,name:s.name,class:s.class,registrationCode:s.registrationCode||"",registered:!!s.registered,needsPasswordReset:!!s.needsPasswordReset,points:Number(s.points)||0})),
+         tasks,records,approvals,passwordResetRequests
+       });
+       setCloudStatus("云端已同步","ok");
+     }catch(e){setCloudStatus("云端同步失败："+friendlyCloudError(e),"bad")}
+   },350);
+ }
 }
 save();
 
 
+
+
+function friendlyCloudError(e){
+ const m=String(e?.message||e||"");
+ if(m==="CLOUD_NOT_CONFIGURED")return "请在 config.js 填写 SCF 函数 URL";
+ if(e?.status===401)return "登录已失效";
+ return m;
+}
+function setCloudStatus(t,k=""){const el=document.getElementById("cloudStatus");if(el){el.textContent=t;el.className="status "+k}}
+async function loadTeacherCloudState(){
+ const d=await CloudAPI.teacherState(teacherToken);
+ suppressCloudSave=true;
+ students=d.students||[];tasks=d.tasks||[];records=d.records||[];approvals=d.approvals||[];passwordResetRequests=d.passwordResetRequests||[];
+ suppressCloudSave=false;save();renderAll();
+}
+async function loadStudentCloudState(){
+ const d=await CloudAPI.studentState(studentToken);
+ suppressCloudSave=true;
+ current=d.profile||current;tasks=d.tasks||[];records=d.records||[];approvals=d.approvals||[];
+ students=current?[current]:[];
+ suppressCloudSave=false;save();renderAll();
+}
+async function initCloud(){
+ if(!window.CloudAPI?.configured()){setCloudStatus("尚未配置腾讯云：请编辑 config.js","warn");return}
+ try{
+   const h=await CloudAPI.request("/health");setCloudStatus("腾讯云已连接 · "+(h.storage||"COS"),"ok");
+   if(teacherToken){try{teacherLoggedIn=true;await loadTeacherCloudState();updateTeacherVisibility()}catch(e){teacherToken="";teacherLoggedIn=false;sessionStorage.removeItem("teacherToken")}}
+   else if(studentToken){try{await loadStudentCloudState();loginOk=!!current;updateGate()}catch(e){studentToken="";sessionStorage.removeItem("studentToken")}}
+ }catch(e){setCloudStatus("腾讯云连接失败："+friendlyCloudError(e),"bad")}
+}
 
 // ===== v5.4 学生账号数据兼容：保留旧版已注册账号 =====
 students=students.map(s=>({
@@ -109,27 +154,19 @@ window.stopCamera=function(preserveVerification=false){
  updateGate();
 };
 
-// ===== 教师端登录 =====
-const TEACHER_USER="admin";
-const TEACHER_PASSWORD="123456";
-let teacherLoggedIn=sessionStorage.getItem("teacherLoggedIn")==="1";
-window.teacherLogin=function(){
- const u=document.getElementById("teacherUser").value.trim();
- const p=document.getElementById("teacherPassword").value;
- teacherLoggedIn=(u===TEACHER_USER&&p===TEACHER_PASSWORD);
- if(teacherLoggedIn) sessionStorage.setItem("teacherLoggedIn","1");
+// ===== 教师端登录（腾讯云） =====
+let teacherLoggedIn=!!teacherToken;
+window.teacherLogin=async function(){
+ const u=document.getElementById("teacherUser").value.trim(),p=document.getElementById("teacherPassword").value;
  const msg=document.getElementById("teacherLoginMsg");
- msg.textContent=teacherLoggedIn?"教师端登录成功":"教师账号或密码错误";
- msg.className="status "+(teacherLoggedIn?"ok":"bad");
- updateTeacherVisibility();
+ try{const d=await CloudAPI.teacherLogin(u,p);teacherToken=d.token;sessionStorage.setItem("teacherToken",teacherToken);teacherLoggedIn=true;msg.textContent="教师端登录成功";msg.className="status ok";await loadTeacherCloudState();updateTeacherVisibility()}
+ catch(e){teacherLoggedIn=false;msg.textContent="教师登录失败："+friendlyCloudError(e);msg.className="status bad"}
 };
-window.teacherLogout=function(){teacherLoggedIn=false;sessionStorage.removeItem("teacherLoggedIn");updateTeacherVisibility();};
+window.teacherLogout=function(){teacherLoggedIn=false;teacherToken="";sessionStorage.removeItem("teacherToken");updateTeacherVisibility()};
 function updateTeacherVisibility(){
- const box=document.getElementById("teacherProtected");
- if(box) box.classList.toggle("hidden",!teacherLoggedIn);
- const msg=document.getElementById("teacherLoginMsg");
- if(msg&&teacherLoggedIn){msg.textContent="教师端已登录";msg.className="status ok";}
- if(teacherLoggedIn){ renderApprovals(); renderPasswordResetRequests(); }
+ const box=document.getElementById("teacherProtected");if(box)box.classList.toggle("hidden",!teacherLoggedIn);
+ const msg=document.getElementById("teacherLoginMsg");if(msg&&teacherLoggedIn){msg.textContent="教师端已登录（云端）";msg.className="status ok"}
+ if(teacherLoggedIn){renderApprovals();renderPasswordResetRequests()}
 }
 
 // ===== 批量添加学生（v5.4：不再由老师分配密码） =====
@@ -245,85 +282,30 @@ window.clearStudents=function(){
  }
 }
 
-window.login=function(){
- const id=document.getElementById("studentId").value.trim();
- const pw=document.getElementById("studentPassword").value;
- const found=students.find(s=>String(s.id)===id)||null;
- current=(found && found.registered && !found.needsPasswordReset && String(found.password)===pw)?found:null;
- loginOk=!!current; secondOk=false; phraseOk=false; liveOk=false;
- const msg=document.getElementById("loginMsg");
- if(current){
-   msg.textContent=`登录成功：${current.name}（${current.class}）`;
-   msg.className="status ok";
- }else if(found && !found.registered){
-   msg.textContent="该学生尚未设置密码，请使用“首次注册”完成账号设置。";
-   msg.className="status warn";
- }else if(found && found.needsPasswordReset){
-   msg.textContent="老师已批准密码重置，请使用“重新设置密码”完成新密码设置。";
-   msg.className="status warn";
- }else{
-   msg.textContent="学生ID或密码错误";
-   msg.className="status bad";
+window.login=async function(){
+ const id=document.getElementById("studentId").value.trim(),pw=document.getElementById("studentPassword").value,msg=document.getElementById("loginMsg");
+ try{
+   const d=await CloudAPI.studentLogin(id,pw);studentToken=d.token;sessionStorage.setItem("studentToken",studentToken);current=d.profile;loginOk=true;secondOk=phraseOk=liveOk=false;eyeCalibrationReady=sessionVerificationReady=false;
+   msg.textContent=`登录成功：${current.name}（${current.class}）`;msg.className="status ok";await loadStudentCloudState()
+ }catch(e){
+   current=null;loginOk=false;const c=e?.data?.code;
+   msg.textContent=c==="NOT_REGISTERED"?"该学生尚未注册，请先设置密码":c==="NEEDS_RESET"?"老师已批准重置，请重新设置密码":"学生ID或密码错误";msg.className="status bad"
  }
- sessionVerificationReady=false;
- liveOk=false;
- eyeCalibrationReady=false;
- updateGate(); renderPoints(); renderTaskAttemptStatus();
+ updateGate();renderPoints();renderTaskAttemptStatus()
 }
-
-function findStudentForRegistration(){
- const id=document.getElementById("regStudentId").value.trim();
- const name=document.getElementById("regStudentName").value.trim();
- const code=document.getElementById("regCode").value.trim();
- return students.find(s=>String(s.id)===id && String(s.name).trim()===name && String(s.registrationCode||"").trim()===code)||null;
-}
-
-window.registerStudentAccount=function(){
- const s=findStudentForRegistration();
- const password=document.getElementById("regPassword").value;
- const password2=document.getElementById("regPassword2").value;
- const pin=document.getElementById("regParentPin").value.trim();
+window.registerStudentAccount=async function(){
+ const b={id:document.getElementById("regStudentId").value.trim(),name:document.getElementById("regStudentName").value.trim(),registrationCode:document.getElementById("regCode").value.trim(),password:document.getElementById("regPassword").value,password2:document.getElementById("regPassword2").value,parentPin:document.getElementById("regParentPin").value.trim()};
  const msg=document.getElementById("registerMsg");
- if(!s){msg.textContent="学生ID、姓名或初始注册码不正确";msg.className="status bad";return}
- if(s.registered && !s.needsPasswordReset){
-   msg.textContent="该账号已经完成注册，请直接登录；如忘记密码请提交重置申请。";msg.className="status warn";return;
- }
- if(password.length<6){msg.textContent="登录密码至少 6 位";msg.className="status bad";return}
- if(password!==password2){msg.textContent="两次输入的密码不一致";msg.className="status bad";return}
- if(!/^\d{4,6}$/.test(pin)){msg.textContent="家长 PIN 请设置为 4-6 位数字";msg.className="status bad";return}
- s.password=password;
- s.parentPin=pin;
- s.registered=true;
- s.needsPasswordReset=false;
- save();renderStudents();
- msg.textContent="设置成功！以后使用学生ID + 自己设置的密码登录。";
- msg.className="status ok";
- // If there was an approved reset request, mark it completed.
- passwordResetRequests.filter(r=>String(r.studentId)===String(s.id)&&r.status==="approved"&&!r.completedAt)
-   .forEach(r=>r.completedAt=new Date().toLocaleString());
- save();renderPasswordResetRequests();
+ if(b.password.length<6){msg.textContent="登录密码至少6位";msg.className="status bad";return}
+ if(b.password!==b.password2){msg.textContent="两次密码不一致";msg.className="status bad";return}
+ if(!/^\d{4,6}$/.test(b.parentPin)){msg.textContent="家长PIN需4-6位数字";msg.className="status bad";return}
+ try{await CloudAPI.studentRegister(b);msg.textContent="设置成功，请用学生ID+密码登录";msg.className="status ok"}
+ catch(e){msg.textContent="设置失败："+(e?.data?.error||friendlyCloudError(e));msg.className="status bad"}
 }
-
-window.requestPasswordReset=function(){
- const id=document.getElementById("forgotStudentId").value.trim();
- const name=document.getElementById("forgotStudentName").value.trim();
- const s=students.find(x=>String(x.id)===id && String(x.name).trim()===name);
- const msg=document.getElementById("forgotMsg");
- if(!s){msg.textContent="学生ID和姓名不匹配";msg.className="status bad";return}
- if(!s.registered){
-   msg.textContent="该学生还没有注册密码，请直接使用“首次注册”。";
-   msg.className="status warn";return;
- }
- const existing=passwordResetRequests.some(r=>String(r.studentId)===id&&r.status==="pending");
- if(existing){msg.textContent="已经提交过密码重置申请，请等待老师处理。";msg.className="status warn";return}
- passwordResetRequests.unshift({
-   id:"pr"+Date.now()+"_"+Math.random().toString(36).slice(2,7),
-   studentId:s.id,studentName:s.name,class:s.class,
-   requestedAt:new Date().toLocaleString(),status:"pending"
- });
- save();renderPasswordResetRequests();
- msg.textContent="密码重置申请已提交，请等待老师审批。";
- msg.className="status ok";
+window.requestPasswordReset=async function(){
+ const id=document.getElementById("forgotStudentId").value.trim(),name=document.getElementById("forgotStudentName").value.trim(),msg=document.getElementById("forgotMsg");
+ try{await CloudAPI.requestPasswordReset(id,name);msg.textContent="密码重置申请已提交";msg.className="status ok"}
+ catch(e){msg.textContent="提交失败："+(e?.data?.error||friendlyCloudError(e));msg.className="status bad"}
 }
 
 window.requestOtp=function(){
@@ -334,14 +316,13 @@ window.requestOtp=function(){
  document.getElementById("verifyMsg").className="status warn";
 }
 
-window.verifySecondFactor=function(){
+window.verifySecondFactor=async function(){
  if(!current){alert("请先登录");return}
- const mode=document.getElementById("verifyMode").value;
- const code=document.getElementById("verifyCode").value.trim();
- secondOk=(mode==="pin" ? code===current.parentPin : code===otp && otp!=="");
+ const mode=document.getElementById("verifyMode").value,code=document.getElementById("verifyCode").value.trim();
+ if(mode==="pin"){try{const r=await CloudAPI.verifyParentPin(studentToken,code);secondOk=!!r.ok}catch(e){secondOk=false}}
+ else secondOk=(code===otp&&otp!=="");
  document.getElementById("verifyMsg").textContent=secondOk?"第二步核验通过":"核验失败";
- document.getElementById("verifyMsg").className="status "+(secondOk?"ok":"bad");
- updateGate();
+ document.getElementById("verifyMsg").className="status "+(secondOk?"ok":"bad");updateGate()
 }
 
 const phrases=[
@@ -680,19 +661,12 @@ async function completeRecitationAttempt(forceEyeFail=false){
  const spotRate=Number(localStorage.getItem("spotRate")||0.2);
  const spotCheck=Math.random()<spotRate;
 
- records.unshift({
-   id:"r"+Date.now()+"_"+Math.random().toString(36).slice(2,7),
-   time:new Date().toLocaleString(),
-   studentId:current.id,name:current.name,
-   taskId:task.id,task:task.title,
-   score,pass,spotCheck,
-   eyeOpenMs:Math.round(eyeStats.openMs||0),
-   eyeViolation
- });
-
- syncStudentPoints(current.id);
- save(); renderPoints(); renderRecords(); renderStudents();
-
+ try{
+   await CloudAPI.submitAttempt(studentToken,{taskId:task.id,score,eyeOpenMs:Math.round(eyeStats.openMs||0),eyeViolation,spotCheck});
+   await loadStudentCloudState();
+ }catch(e){
+   recitationCompleting=false;updateRecitationButtons();alert("成绩提交云端失败："+friendlyCloudError(e));return;
+ }
  const after=taskAttemptInfo(current.id,task);
  const eyeSec=((eyeStats.openMs||0)/1000).toFixed(1);
  let result=`<div class="big">${score}%</div>`;
@@ -766,22 +740,11 @@ function updateRecitationButtons(){
  renderTaskAttemptStatus();
 }
 
-window.requestMoreAttempts=function(){
+window.requestMoreAttempts=async function(){
  if(!current){alert("请先登录");return}
- const task=getTask(); if(!task)return;
- const info=taskAttemptInfo(current.id,task);
- if(info.passed){alert("该任务已经通过，无需增加次数。");return}
- if(info.used<info.max){alert(`你还有 ${info.max-info.used} 次机会，暂时不需要申请。`);return}
- if(info.pending){alert("该任务已经提交申请，请等待老师审批。");return}
- approvals.unshift({
-   id:"a"+Date.now()+"_"+Math.random().toString(36).slice(2,7),
-   studentId:current.id,studentName:current.name,
-   taskId:task.id,taskTitle:task.title,
-   requestedAt:new Date().toLocaleString(),
-   status:"pending",extraAttempts:1
- });
- save();renderTaskAttemptStatus();renderApprovals();
- alert("已提交申请，请等待老师审批。老师批准后会增加 1 次背诵机会。");
+ const task=getTask();if(!task)return;
+ try{await CloudAPI.requestExtra(studentToken,task.id);await loadStudentCloudState();alert("申请已提交，请等待老师审批")}
+ catch(e){alert("申请失败："+(e?.data?.error||friendlyCloudError(e)))}
 }
 
 function renderTaskAttemptStatus(){
@@ -974,3 +937,5 @@ function escapeHtml(s){return String(s).replace(/[&<>"']/g,m=>({"&":"&amp;","<":
 function renderAll(){renderTasks();renderStudents();renderTaskTable();renderRecords();renderApprovals();renderPasswordResetRequests();renderPoints();updateGate();renderTaskAttemptStatus();}
 renderAll();
 updateTeacherVisibility();
+
+window.addEventListener("load",()=>initCloud());
