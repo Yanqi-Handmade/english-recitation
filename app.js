@@ -23,6 +23,7 @@ let editingTaskId=null;
 let teacherToken=sessionStorage.getItem("teacherToken")||"";
 let studentToken=sessionStorage.getItem("studentToken")||"";
 let cloudSyncTimer=null,suppressCloudSave=false;
+let teacherLoggedIn=!!teacherToken;
 
 function save(){
  localStorage.setItem("v5students",JSON.stringify(students));
@@ -155,7 +156,6 @@ window.stopCamera=function(preserveVerification=false){
 };
 
 // ===== 教师端登录（腾讯云） =====
-let teacherLoggedIn=!!teacherToken;
 window.teacherLogin=async function(){
  const u=document.getElementById("teacherUser").value.trim(),p=document.getElementById("teacherPassword").value;
  const msg=document.getElementById("teacherLoginMsg");
