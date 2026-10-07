@@ -895,6 +895,38 @@ function renderTaskTable(){
    </div>`).join("");
 }
 
+
+function renderPasswordResetRequests(){
+ const box=document.getElementById("passwordResetTable");
+ if(!box)return;
+ const pending=passwordResetRequests.filter(r=>r.status==="pending");
+ const processed=passwordResetRequests.filter(r=>r.status!=="pending").slice(0,50);
+ let html='<h3>待处理</h3>';
+ if(!pending.length) html+='<div class="note">暂无密码重置申请。</div>';
+ else html+=`<table><tr><th>申请时间</th><th>学生</th><th>班级</th><th>处理</th></tr>`+
+ pending.map(r=>`<tr><td>${escapeHtml(r.requestedAt||"")}</td><td>${escapeHtml(r.studentName||"")}<br><span class="note">${escapeHtml(r.studentId||"")}</span></td><td>${escapeHtml(r.class||"")}</td><td><button class="good" onclick="processPasswordReset('${r.id}','approve')">批准重置</button> <button class="secondary" onclick="processPasswordReset('${r.id}','reject')">拒绝</button></td></tr>`).join("")+'</table>';
+ html+='<h3 style="margin-top:18px">已处理</h3>';
+ if(!processed.length) html+='<div class="note">暂无已处理记录。</div>';
+ else html+=`<table><tr><th>处理时间</th><th>学生</th><th>结果</th><th>新密码状态</th></tr>`+
+ processed.map(r=>`<tr><td>${escapeHtml(r.processedAt||"")}</td><td>${escapeHtml(r.studentName||"")}</td><td>${r.status==="approved"?"已批准":"已拒绝"}</td><td>${r.completedAt?"已重新设置":"—"}</td></tr>`).join("")+'</table>';
+ box.innerHTML=html;
+}
+
+window.processPasswordReset=function(id,action){
+ if(!teacherLoggedIn){alert("请先登录教师端");return}
+ const r=passwordResetRequests.find(x=>x.id===id);
+ if(!r||r.status!=="pending")return;
+ r.status=action==="approve"?"approved":"rejected";
+ r.processedAt=new Date().toLocaleString();
+ if(action==="approve"){
+   const s=students.find(x=>String(x.id)===String(r.studentId));
+   if(s) s.needsPasswordReset=true;
+ }
+ save();
+ renderPasswordResetRequests();
+ renderStudents();
+};
+
 function renderApprovals(){
  const box=document.getElementById("approvalTable");
  if(!box)return;
