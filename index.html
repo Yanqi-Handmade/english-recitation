@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>英语背诵打卡 v5.6</title>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#f5f7fb;color:#1f2937;font-family:-apple-system,BlinkMacSystemFont,"HarmonyOS Sans SC","PingFang SC","Microsoft YaHei",sans-serif}
+header{background:#fff;padding:15px 18px;border-bottom:1px solid #e5e7eb;font-weight:800}
+main{max-width:900px;margin:auto;padding:14px}
+.card{background:#fff;border-radius:16px;padding:16px;margin-bottom:14px;box-shadow:0 3px 14px rgba(0,0,0,.05)}
+h2{font-size:20px;margin:0 0 12px}
+input,select,textarea,button{font:inherit}
+input,select,textarea{width:100%;border:1px solid #d1d5db;border-radius:11px;padding:12px}
+button{border:0;border-radius:12px;padding:12px 16px;background:#1677ff;color:#fff;font-weight:800}
+button.secondary{background:#e5e7eb;color:#222}
+button.good{background:#16a34a}
+button.warn{background:#d97706}
+button:disabled{opacity:.45}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+.row>*{flex:1}
+.note{color:#6b7280;font-size:14px;line-height:1.55}
+.status{font-weight:800;padding:10px 12px;border-radius:10px;background:#eef2ff;margin:10px 0}
+.status.ok{background:#dcfce7;color:#166534}
+.status.bad{background:#fee2e2;color:#991b1b}
+.status.warn{background:#fef3c7;color:#92400e}
+video{width:100%;background:#111;border-radius:14px;transform:scaleX(-1)}
+.big{font-size:42px;font-weight:900;text-align:center;margin:14px 0}
+#challengeText,#phraseText{font-size:24px;font-weight:900;text-align:center;margin:14px 0}
+.tabs button{background:#eef2ff;color:#1e3a8a}.tabs button.active{background:#1d4ed8;color:#fff}
+.hidden{display:none}
+.checklist div{padding:7px 0;border-bottom:1px solid #eee}
+.pass{color:#15803d;font-weight:800}.fail{color:#b91c1c;font-weight:800}
+table{width:100%;border-collapse:collapse}td,th{padding:9px;border-bottom:1px solid #eee;text-align:left}
+.tablewrap{overflow:auto}.invalid{background:#fee2e2}.dup{background:#fef3c7} h3{font-size:16px;margin:10px 0}.badBtn{background:#dc2626;color:#fff}.taskContent{white-space:pre-wrap;line-height:1.65;padding:12px;margin-top:8px;background:#f8fafc;border-radius:10px;border:1px solid #e5e7eb}
+a.btn{display:inline-block;border:0;border-radius:12px;padding:12px 16px;background:#1677ff;color:#fff;font-weight:800;text-decoration:none;text-align:center}
+</style>
+</head>
+<body>
+<header>英语背诵打卡 · v5.6 任务管理与语音修复版</header>
+<main>
+
+<div class="card tabs">
+  <div class="row">
+    <button id="studentTab" class="active" onclick="showTab('student')">学生端</button>
+    <button id="teacherTab" onclick="showTab('teacher')">教师端</button>
+  </div>
+</div>
+
+<section id="student">
+  <div class="card">
+    <h2>1. 学生账号</h2>
+    <h3>正常登录</h3>
+    <div class="row">
+      <input id="studentId" placeholder="学生 ID，例如 30101">
+      <input id="studentPassword" type="password" placeholder="自己设置的登录密码">
+    </div>
+    <button style="margin-top:10px" onclick="login()">登录</button>
+    <div id="loginMsg" class="status">未登录</div>
+
+    <hr style="border:0;border-top:1px solid #eee;margin:18px 0">
+    <h3>首次注册 / 老师批准重置后重新设置密码</h3>
+    <p class="note">老师只提供学生ID、姓名和初始注册码。第一次使用时由学生自己设置登录密码和家长PIN。</p>
+    <div class="row">
+      <input id="regStudentId" placeholder="学生 ID">
+      <input id="regStudentName" placeholder="学生姓名">
+    </div>
+    <input id="regCode" style="margin-top:10px" placeholder="初始注册码">
+    <div class="row" style="margin-top:10px">
+      <input id="regPassword" type="password" placeholder="设置登录密码（至少6位）">
+      <input id="regPassword2" type="password" placeholder="再次输入登录密码">
+    </div>
+    <input id="regParentPin" style="margin-top:10px" inputmode="numeric" placeholder="设置家长 PIN（4-6位数字）">
+    <button class="good" style="margin-top:10px" onclick="registerStudentAccount()">设置账号</button>
+    <div id="registerMsg" class="status">尚未设置</div>
+
+    <hr style="border:0;border-top:1px solid #eee;margin:18px 0">
+    <h3>忘记密码</h3>
+    <div class="row">
+      <input id="forgotStudentId" placeholder="学生 ID">
+      <input id="forgotStudentName" placeholder="学生姓名">
+    </div>
+    <button class="warn" style="margin-top:10px" onclick="requestPasswordReset()">申请老师重置密码</button>
+    <div id="forgotMsg" class="status">尚未申请</div>
+  </div>
+
+  <div class="card">
+    <h2>2. 第二步核验</h2>
+    <select id="verifyMode">
+      <option value="pin">家长 PIN</option>
+      <option value="otp">一次性验证码</option>
+    </select>
+    <div class="row" style="margin-top:10px">
+      <input id="verifyCode" placeholder="输入 PIN / 验证码">
+      <button onclick="requestOtp()">获取验证码</button>
+      <button onclick="verifySecondFactor()">确认</button>
+    </div>
+    <div id="verifyMsg" class="status">未验证</div>
+    <p class="note">原型中验证码会直接显示在页面，正式版需接短信/微信/家长端推送服务。</p>
+  </div>
+
+  <div class="card">
+    <h2>3. 随机朗读口令</h2>
+    <div id="phraseText">请先完成前两步</div>
+    <textarea id="phraseResult" rows="3" placeholder="语音识别结果"></textarea>
+    <div class="row" style="margin-top:10px">
+      <button onclick="newPhrase()">生成随机口令</button>
+      <button onclick="speakPhrase()">🎤 朗读口令</button>
+      <button class="good" onclick="checkPhrase()">核验口令</button>
+    </div>
+    <div id="phraseMsg" class="status">未通过</div>
+  </div>
+
+  <div class="card">
+    <h2>4. 活体检测</h2>
+    <video id="video" autoplay muted playsinline></video>
+    <div id="challengeText">先打开摄像头</div>
+    <div id="liveStatus" class="status">未开始</div>
+    <div class="row">
+      <button onclick="startCamera()">打开摄像头</button>
+      <button id="challengeBtn" onclick="startChallenge()" disabled>开始活体检测</button>
+      <button class="secondary" onclick="stopCamera()">关闭</button>
+    </div>
+    <div id="eyeCalibrationStatus" class="status">尚未完成睁眼/闭眼校准</div>
+    <button id="eyeCalibrationBtn" class="good" style="margin-top:10px" onclick="beginEyeCalibration()" disabled>开始睁眼/闭眼校准</button>
+    <p class="note">每次登录后只需要完成一次：活体检测 → 自然睁眼约1秒 → 完全闭眼约2秒。之后换任务无需重复校准；每次背诵会自动重新打开摄像头并从0累计睁眼时间。</p>
+  </div>
+
+  <div class="card">
+    <h2>5. 核验状态</h2>
+    <div class="checklist">
+      <div>账号登录：<span id="c1" class="fail">未通过</span></div>
+      <div>第二步核验：<span id="c2" class="fail">未通过</span></div>
+      <div>随机朗读口令：<span id="c3" class="fail">未通过</span></div>
+      <div>活体检测：<span id="c4" class="fail">未通过</span></div>
+      <div>睁眼/闭眼校准：<span id="c5" class="fail">未通过</span></div>
+    </div>
+    <div id="gate" class="status bad">核验未完成，暂不能提交背诵</div>
+  </div>
+
+  <div class="card">
+    <h2>6. 背诵任务</h2>
+    <select id="taskSelect"></select>
+    <div id="taskAttemptStatus" class="status">登录后可查看本任务背诵次数。</div>
+    <div id="attemptRequestBox"></div>
+    <p class="note">每名学生每个任务默认最多背诵 3 次；本任务最多获得 1 分。次数用完仍未通过时，可申请老师增加次数。</p>
+  </div>
+
+  <div class="card">
+    <h2>7. 开始背诵</h2>
+    <p class="note">本次登录首次使用时完成一次视频活体和睁眼/闭眼校准即可。之后切换任务不需要重新校准；点击开始背诵后自动重新打开摄像头，麦克风真正启动后才从0秒开始累计睁眼时间。</p>
+    <div id="eyeMonitorStatus" class="status">尚未开始背诵闭眼检测</div>
+    <div id="eyeOpenTime" class="status">累计睁眼：0.0 / 3.0 秒</div>
+    <div id="speechStatus" class="status">语音识别尚未启动</div>
+    <textarea id="recognized" rows="7" placeholder="开始背诵后，语音识别结果会显示在这里"></textarea>
+    <div class="row" style="margin-top:10px">
+      <button id="speechBtn" onclick="startRecitationSpeech()" disabled>🎤 开始背诵 / 背单词</button>
+      <button id="stopSpeechBtn" class="secondary" onclick="stopSpeech()" disabled>停止语音</button>
+      <button id="gradeBtn" class="good" onclick="grade()" disabled>睁眼并提交评分</button>
+    </div>
+    <div id="scoreResult"></div>
+  </div>
+
+  <div class="card">
+    <h2>8. 我的积分</h2>
+    <div id="points" class="big">0</div>
+    <div class="note" style="text-align:center;margin-bottom:12px">总积分 = 已合格任务数；每个任务最多 1 分</div>
+    <div id="studentPointHistory" class="tablewrap"></div>
+  </div>
+</section>
+
+<section id="teacher" class="hidden">
+  <div id="teacherLoginCard" class="card">
+    <h2>教师端登录</h2>
+    <div class="row">
+      <input id="teacherUser" placeholder="教师账号">
+      <input id="teacherPassword" type="password" placeholder="教师密码">
+    </div>
+    <button style="margin-top:10px" onclick="teacherLogin()">登录教师端</button>
+    <div id="teacherLoginMsg" class="status">未登录</div>
+    <p class="note">测试默认账号：admin，密码：123456。正式联网版会改成服务端账号认证。</p>
+  </div>
+
+  <div id="teacherProtected" class="hidden">
+  <div class="card">
+    <h2>学生名录 XLSX 导入</h2>
+    <div class="row">
+      <a class="btn" href="./学生名录导入模板.xlsx" download>⬇ 下载 XLSX 导入模板</a>
+      <label class="btn secondary" style="text-align:center">选择 XLSX 文件
+        <input id="xlsxFile" type="file" accept=".xlsx" style="display:none" onchange="previewXlsx()">
+      </label>
+    </div>
+    <p class="note">文件名可以随意。第一张工作表需要包含：学生ID、姓名、班级、初始注册码。学生登录密码和家长PIN由学生首次注册时自行设置。</p>
+    <div id="importSummary" class="status">尚未选择文件</div>
+    <div id="previewWrap" class="tablewrap"></div>
+    <div class="row" style="margin-top:10px">
+      <button id="confirmImportBtn" class="good" onclick="confirmImport()" disabled>确认导入</button>
+      <button class="secondary" onclick="resetImport()">取消预览</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>批量添加学生</h2>
+    <p class="note">每行一名学生，格式：学生ID,姓名,班级,初始注册码</p>
+    <textarea id="batchStudents" rows="7" placeholder="30101,张三,三年级1班,A30101
+30102,李四,三年级1班,A30102"></textarea>
+    <div class="row" style="margin-top:10px">
+      <button onclick="previewBatchStudents()">预览批量学生</button>
+      <button id="confirmBatchBtn" class="good" onclick="confirmBatchStudents()" disabled>确认批量添加</button>
+    </div>
+    <div id="batchSummary" class="status">尚未填写</div>
+    <div id="batchPreview" class="tablewrap"></div>
+  </div>
+
+  <div class="card">
+    <h2>教师端设置</h2>
+    <label>随机抽查概率</label>
+    <select id="spotRate" onchange="saveSpotRate()">
+      <option value="0">0%</option>
+      <option value="0.1">10%</option>
+      <option value="0.2" selected>20%</option>
+      <option value="0.3">30%</option>
+      <option value="0.5">50%</option>
+    </select>
+    <p class="note">原型仅记录“需要抽查”标记；正式版再接云存储上传短视频给老师审核。</p>
+  </div>
+
+  <div class="card">
+    <h2>学生列表</h2>
+    <div class="row" style="margin-bottom:10px">
+      <button class="secondary" onclick="clearStudents()">清空学生名单</button>
+    </div>
+    <div id="studentTable" class="tablewrap"></div>
+  </div>
+
+  <div class="card">
+    <h2>背诵任务</h2>
+    <div class="row">
+      <input id="newTaskTitle" placeholder="任务名称">
+      <select id="newTaskType">
+        <option value="word">单词</option>
+        <option value="text">课文</option>
+      </select>
+    </div>
+    <textarea id="newTaskText" rows="7" style="margin-top:10px" placeholder="粘贴你有权使用的标准文本"></textarea>
+    <div id="taskEditHint" class="note" style="margin-top:8px"></div>
+    <div class="row" style="margin-top:10px">
+      <button id="saveTaskBtn" onclick="addTask()">新增任务</button>
+      <button id="cancelTaskEditBtn" class="secondary hidden" onclick="cancelTaskEdit()">取消修改</button>
+    </div>
+    <div id="taskTable" style="margin-top:12px"></div>
+  </div>
+
+  <div class="card">
+    <h2>学生密码重置审批</h2>
+    <p class="note">学生忘记密码后提交申请。老师批准只会清除旧登录密码，不会删除积分、任务记录、背诵次数或审批记录；学生随后使用原来的学生ID、姓名和初始注册码重新设置密码。</p>
+    <div id="passwordResetTable" class="tablewrap"></div>
+  </div>
+
+  <div class="card">
+    <h2>增加背诵次数审批</h2>
+    <p class="note">学生默认每个任务有 3 次机会。用完仍未合格后可提交申请；每次批准增加 1 次机会。</p>
+    <div id="approvalTable" class="tablewrap"></div>
+  </div>
+
+  <div class="card">
+    <h2>背诵记录</h2>
+    <div id="recordTable"></div>
+  </div>
+  <div class="card">
+    <button class="secondary" onclick="teacherLogout()">退出教师端</button>
+  </div>
+  </div>
+</section>
+
+</main>
+<script src="liveness.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
