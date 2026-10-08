@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>英语背诵打卡 v7.9</title>
+<title>英语背诵打卡 v8.0</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
 *{box-sizing:border-box}
@@ -78,6 +78,23 @@ a.btn{display:inline-block;border:0;border-radius:12px;padding:12px 16px;backgro
 .teacherToolbar .wide{grid-column:span 2}
 .batchBar{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
 .settingsGrid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+
+.studentHero{background:linear-gradient(135deg,#eff6ff,#f5f3ff);border:1px solid #dbeafe}
+.studentHeroActions{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
+.learningGrid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.learningCard{border:1px solid #e5e7eb;border-radius:16px;padding:14px;background:#fff}
+.learningCard h3{margin-top:0}
+.pointSplit{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:12px 0}
+.pointTile{border:1px solid #e5e7eb;border-radius:14px;padding:12px;text-align:center;background:#fff}
+.pointTile b{display:block;font-size:26px;margin-top:4px}
+.wordTestQuestion{font-size:34px;font-weight:900;text-align:center;margin:18px 0}
+.wordTestProgress{text-align:center;color:#64748b;font-weight:700}
+.wordTestAnswer{font-size:26px;text-align:center;letter-spacing:2px}
+.wordTestResultTable td,.wordTestResultTable th{vertical-align:top}
+.taskGroupTitle{margin:16px 0 8px;font-weight:900;font-size:18px}
+@media(max-width:700px){
+ .learningGrid,.pointSplit{grid-template-columns:1fr}
+}
 .smallCheck{width:18px;height:18px}
 @media(max-width:700px){
  .teacherToolbar{grid-template-columns:1fr 1fr}
@@ -97,7 +114,7 @@ a.btn{display:inline-block;border:0;border-radius:12px;padding:12px 16px;backgro
 </style>
 </head>
 <body>
-<header>英语背诵打卡 · v7.9 教师信任设备版</header>
+<header>英语背诵打卡 · v8.0 学生学习首页版</header>
 <main>
 
 <div class="card tabs">
@@ -108,44 +125,124 @@ a.btn{display:inline-block;border:0;border-radius:12px;padding:12px 16px;backgro
 </div>
 
 <section id="student">
-  <div class="card">
-    <h2>1. 学生账号</h2>
-    <h3>正常登录</h3>
-    <div class="row">
-      <input id="studentId" placeholder="学生 ID，例如 30101">
-      <input id="studentPassword" type="password" placeholder="自己设置的登录密码">
+  <div class="card studentHero">
+    <div id="studentLoggedInWelcome" class="hidden">
+      <h2 id="studentWelcomeText">👋 欢迎回来</h2>
+      <div id="studentWelcomeMeta" class="note"></div>
+      <div class="studentHeroActions">
+        <button onclick="scrollToStudentArea('wordLearningCard')">📚 背单词</button>
+        <button onclick="scrollToStudentArea('textLearningCard')">📖 背课文</button>
+        <button class="secondary" onclick="studentLogout()">退出账号</button>
+      </div>
     </div>
-    <button style="margin-top:10px" onclick="login()">登录</button>
-    <div id="loginMsg" class="status">未登录</div>
 
-    <hr style="border:0;border-top:1px solid #eee;margin:18px 0">
-    <h3>首次注册 / 老师批准重置后重新设置密码</h3>
-    <p class="note">老师只提供学生ID、姓名和初始注册码。第一次使用时由学生自己设置登录密码和家长PIN。</p>
-    <div class="row">
-      <input id="regStudentId" placeholder="学生 ID">
-      <input id="regStudentName" placeholder="学生姓名">
+    <div id="studentLoginArea">
+      <h2>学生登录</h2>
+      <div class="row">
+        <input id="studentId" placeholder="学生 ID，例如 30101">
+        <input id="studentPassword" type="password" placeholder="自己设置的登录密码">
+      </div>
+      <button style="margin-top:10px" onclick="login()">登录</button>
+      <div id="loginMsg" class="status">未登录</div>
+      <div class="row" style="margin-top:10px">
+        <button id="showRegistrationBtn" class="secondary" onclick="toggleRegistrationArea()">首次使用 / 老师已批准重置密码</button>
+      </div>
     </div>
-    <input id="regCode" style="margin-top:10px" placeholder="初始注册码">
+
+    <div id="registrationArea" class="hidden" style="margin-top:16px">
+      <hr style="border:0;border-top:1px solid #eee;margin:18px 0">
+      <h3>首次注册 / 老师批准重置后重新设置密码</h3>
+      <p class="note">仅首次使用，或老师批准密码重置后需要填写。正常已注册学生不会显示此区域。</p>
+      <div class="row">
+        <input id="regStudentId" placeholder="学生 ID">
+        <input id="regStudentName" placeholder="学生姓名">
+      </div>
+      <input id="regCode" style="margin-top:10px" placeholder="初始注册码">
+      <div class="row" style="margin-top:10px">
+        <input id="regPassword" type="password" placeholder="设置登录密码（至少6位）">
+        <input id="regPassword2" type="password" placeholder="再次输入登录密码">
+      </div>
+      <input id="regParentPin" style="margin-top:10px" inputmode="numeric" placeholder="设置家长 PIN（4-6位数字）">
+      <div class="row" style="margin-top:10px">
+        <button class="good" onclick="registerStudentAccount()">设置账号</button>
+        <button class="secondary" onclick="toggleRegistrationArea(false)">收起</button>
+      </div>
+      <div id="registerMsg" class="status">尚未设置</div>
+    </div>
+
+    <div id="forgotArea">
+      <hr style="border:0;border-top:1px solid #eee;margin:18px 0">
+      <details>
+        <summary style="cursor:pointer;font-weight:800">忘记密码？申请老师重置</summary>
+        <div class="row" style="margin-top:10px">
+          <input id="forgotStudentId" placeholder="学生 ID">
+          <input id="forgotStudentName" placeholder="学生姓名">
+        </div>
+        <button class="warn" style="margin-top:10px" onclick="requestPasswordReset()">申请老师重置密码</button>
+        <div id="forgotMsg" class="status">尚未申请</div>
+      </details>
+    </div>
+  </div>
+
+  <div id="wordLearningCard" class="card">
+    <h2>📚 单词学习</h2>
+    <p class="note">平时学习与拼写练习不限次数、不计积分；正式“单词测试”才计次数和积分。</p>
+    <select id="wordTaskSelect"></select>
+    <div id="wordTaskDeadlineStatus" class="status">请选择单词任务。</div>
+    <div id="wordStudyPanel">
+      <div class="note" style="margin-top:10px">每个单词一行：中文释义、发音、拼写练习。</div>
+      <div id="wordStudyList" class="wordStudyList"></div>
+    </div>
+    <div id="wordTestStatus" class="status">登录后可参加正式单词测试。</div>
+    <div id="wordTestRequestBox"></div>
     <div class="row" style="margin-top:10px">
-      <input id="regPassword" type="password" placeholder="设置登录密码（至少6位）">
-      <input id="regPassword2" type="password" placeholder="再次输入登录密码">
+      <button class="good" onclick="startWordTest()">📝 开始单词测试（计积分）</button>
     </div>
-    <input id="regParentPin" style="margin-top:10px" inputmode="numeric" placeholder="设置家长 PIN（4-6位数字）">
-    <button class="good" style="margin-top:10px" onclick="registerStudentAccount()">设置账号</button>
-    <div id="registerMsg" class="status">尚未设置</div>
 
-    <hr style="border:0;border-top:1px solid #eee;margin:18px 0">
-    <h3>忘记密码</h3>
-    <div class="row">
-      <input id="forgotStudentId" placeholder="学生 ID">
-      <input id="forgotStudentName" placeholder="学生姓名">
+    <div id="wordTestPanel" class="hidden" style="margin-top:16px">
+      <div class="wordTestProgress" id="wordTestProgress">第 1 题</div>
+      <div id="wordTestChinese" class="wordTestQuestion">—</div>
+      <div class="row" style="justify-content:center">
+        <button class="secondary" onclick="playWordTestAudio()">🔊 播放发音</button>
+      </div>
+      <input id="wordTestInput" class="wordTestAnswer" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="输入英文拼写" onkeydown="if(event.key==='Enter'){event.preventDefault();nextWordTestQuestion()}">
+      <div class="row" style="margin-top:12px;justify-content:center">
+        <button onclick="nextWordTestQuestion()">下一题</button>
+        <button class="secondary" onclick="cancelWordTest()">退出测试</button>
+      </div>
+      <div class="note" style="text-align:center;margin-top:8px">测试过程中不提示对错，全部完成后统一出成绩。</div>
     </div>
-    <button class="warn" style="margin-top:10px" onclick="requestPasswordReset()">申请老师重置密码</button>
-    <div id="forgotMsg" class="status">尚未申请</div>
+    <div id="wordTestResult"></div>
+  </div>
+
+  <div class="card" id="mistakeBookCard">
+    <h2>📒 我的错词本</h2>
+    <p class="note">拼写练习或正式测试写错的单词会记录在这里。</p>
+    <div class="row">
+      <button class="secondary" onclick="renderMistakeBook()">刷新错词本</button>
+      <button onclick="practiceMistakes()">练习错词</button>
+    </div>
+    <div id="mistakeBookList" class="mistakeList"></div>
+  </div>
+
+  <div id="textLearningCard" class="card">
+    <h2>📖 课文背诵</h2>
+    <p class="note">课文背诵需要完成本次登录的身份核验、活体检测及眼睛校准。单词学习与单词测试不需要这些步骤。</p>
+    <select id="taskSelect"></select>
+    <div id="sectionStudyPanel" class="hidden">
+      <div class="studyTabs">
+        <button class="secondary" onclick="selectWholeText()">全文背诵</button>
+      </div>
+      <div id="sectionList" class="sectionList"></div>
+    </div>
+    <div id="taskDeadlineStatus" class="status">请选择课文任务查看时间要求。</div>
+    <div id="taskAttemptStatus" class="status">登录后可查看本课文背诵次数。</div>
+    <div id="attemptRequestBox"></div>
+    <p class="note">每个课文任务默认最多 3 次；达到 80% 且闭眼检测通过后获得 1 分。</p>
   </div>
 
   <div class="card">
-    <h2>2. 第二步核验</h2>
+    <h2>课文核验 1 · 第二步核验</h2>
     <select id="verifyMode">
       <option value="pin">家长 PIN</option>
       <option value="otp">一次性验证码</option>
@@ -156,11 +253,10 @@ a.btn{display:inline-block;border:0;border-radius:12px;padding:12px 16px;backgro
       <button onclick="verifySecondFactor()">确认</button>
     </div>
     <div id="verifyMsg" class="status">未验证</div>
-    <p class="note">原型中验证码会直接显示在页面，正式版需接短信/微信/家长端推送服务。</p>
   </div>
 
   <div class="card">
-    <h2>3. 随机朗读口令</h2>
+    <h2>课文核验 2 · 随机朗读口令</h2>
     <div id="phraseText">请先完成前两步</div>
     <textarea id="phraseResult" rows="3" placeholder="语音识别结果"></textarea>
     <div class="row" style="margin-top:10px">
@@ -172,7 +268,7 @@ a.btn{display:inline-block;border:0;border-radius:12px;padding:12px 16px;backgro
   </div>
 
   <div class="card">
-    <h2>4. 活体检测</h2>
+    <h2>课文核验 3 · 活体检测</h2>
     <video id="video" autoplay muted playsinline></video>
     <div id="challengeText">先打开摄像头</div>
     <div id="liveStatus" class="status">未开始</div>
@@ -183,11 +279,11 @@ a.btn{display:inline-block;border:0;border-radius:12px;padding:12px 16px;backgro
     </div>
     <div id="eyeCalibrationStatus" class="status">尚未完成睁眼/闭眼校准</div>
     <button id="eyeCalibrationBtn" class="good" style="margin-top:10px" onclick="beginEyeCalibration()" disabled>开始睁眼/闭眼校准</button>
-    <p class="note">每次登录后只需要完成一次：活体检测 → 自然睁眼约1秒 → 完全闭眼约2秒。之后换任务无需重复校准；每次背诵会自动重新打开摄像头并从0累计睁眼时间。</p>
+    <p class="note">每次登录后只需完成一次；之后切换课文任务无需重复校准。</p>
   </div>
 
   <div class="card">
-    <h2>5. 核验状态</h2>
+    <h2>课文核验状态</h2>
     <div class="checklist">
       <div>账号登录：<span id="c1" class="fail">未通过</span></div>
       <div>第二步核验：<span id="c2" class="fail">未通过</span></div>
@@ -195,37 +291,17 @@ a.btn{display:inline-block;border:0;border-radius:12px;padding:12px 16px;backgro
       <div>活体检测：<span id="c4" class="fail">未通过</span></div>
       <div>睁眼/闭眼校准：<span id="c5" class="fail">未通过</span></div>
     </div>
-    <div id="gate" class="status bad">核验未完成，暂不能提交背诵</div>
+    <div id="gate" class="status bad">核验未完成，暂不能提交课文背诵</div>
   </div>
 
   <div class="card">
-    <h2>6. 背诵任务</h2>
-    <select id="taskSelect"></select>
-    <div id="wordStudyPanel" class="hidden">
-      <div class="note" style="margin-top:10px">单词学习：每个单词都可播放发音，也可以单独进入拼写练习。</div>
-      <div id="wordStudyList" class="wordStudyList"></div>
-    </div>
-    <div id="sectionStudyPanel" class="hidden">
-      <div class="studyTabs">
-        <button class="secondary" onclick="selectWholeText()">全文背诵</button>
-      </div>
-      <div id="sectionList" class="sectionList"></div>
-    </div>
-    <div id="taskDeadlineStatus" class="status">请选择任务查看时间要求。</div>
-    <div id="taskAttemptStatus" class="status">登录后可查看本任务背诵次数。</div>
-    <div id="attemptRequestBox"></div>
-    <p class="note">每名学生每个任务默认最多背诵 3 次；本任务最多获得 1 分。次数用完仍未通过时，可申请老师增加次数。</p>
-  </div>
-
-  <div class="card">
-    <h2>7. 开始背诵</h2>
-    <p class="note">本次登录首次使用时完成一次视频活体和睁眼/闭眼校准即可。之后切换任务不需要重新校准；点击开始背诵后自动重新打开摄像头，麦克风真正启动后才从0秒开始累计睁眼时间。</p>
+    <h2>开始课文背诵</h2>
     <div id="eyeMonitorStatus" class="status">尚未开始背诵闭眼检测</div>
     <div id="eyeOpenTime" class="status">累计睁眼：0.0 / 3.0 秒</div>
     <div id="speechStatus" class="status">语音识别尚未启动</div>
     <textarea id="recognized" rows="7" placeholder="开始背诵后，语音识别结果会显示在这里"></textarea>
     <div class="row" style="margin-top:10px">
-      <button id="speechBtn" onclick="startRecitationSpeech()" disabled>🎤 开始背诵 / 背单词</button>
+      <button id="speechBtn" onclick="startRecitationSpeech()" disabled>🎤 开始课文背诵</button>
       <button id="stopSpeechBtn" class="secondary" onclick="stopSpeech()" disabled>停止语音</button>
       <button id="gradeBtn" class="good" onclick="grade()" disabled>睁眼并提交评分</button>
     </div>
@@ -234,19 +310,14 @@ a.btn{display:inline-block;border:0;border-radius:12px;padding:12px 16px;backgro
   </div>
 
   <div class="card">
-    <h2>8. 我的积分</h2>
-    <div id="points" class="big">0</div>
-    <div class="note" style="text-align:center;margin-bottom:12px">总积分 = 已合格任务数；每个任务最多 1 分</div>
-    <div id="studentPointHistory" class="tablewrap"></div>
-  </div>
-  <div class="card" id="mistakeBookCard">
-    <h2>📒 我的错词本</h2>
-    <p class="note">记录你在拼写练习中写错的单词，错误次数越多越靠前。</p>
-    <div class="row">
-      <button class="secondary" onclick="renderMistakeBook()">刷新错词本</button>
-      <button onclick="practiceMistakes()">练习错词</button>
+    <h2>⭐ 我的积分</h2>
+    <div class="pointSplit">
+      <div class="pointTile">总积分<b id="points">0</b></div>
+      <div class="pointTile">📚 单词测试<b id="wordPoints">0</b></div>
+      <div class="pointTile">📖 课文背诵<b id="textPoints">0</b></div>
     </div>
-    <div id="mistakeBookList" class="mistakeList"></div>
+    <div class="note" style="text-align:center;margin-bottom:12px">单词测试与课文背诵每个任务最多各获得 1 分。</div>
+    <div id="studentPointHistory" class="tablewrap"></div>
   </div>
 </section>
 
@@ -382,7 +453,7 @@ a.btn{display:inline-block;border:0;border-radius:12px;padding:12px 16px;backgro
     </label>
 
     <div id="wordTaskEditor" style="margin-top:10px">
-      <p class="note">单词任务请一个一个添加。每行保存“英文单词 + 中文释义”，学生端会一行显示一个单词。</p>
+      <p class="note">单词任务请一个一个添加。学生可不限次数练习；正式单词测试达到 80% 后获得 1 分，默认最多测试 3 次。</p>
       <div class="row">
         <input id="wordInputEn" placeholder="英文单词，例如 apple" onkeydown="if(event.key==='Enter'){event.preventDefault();addWordEditorRow()}">
         <input id="wordInputZh" placeholder="中文，例如 苹果" onkeydown="if(event.key==='Enter'){event.preventDefault();addWordEditorRow()}">

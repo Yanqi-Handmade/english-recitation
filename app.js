@@ -23,6 +23,7 @@ let editingTaskId=null;
 let wordEditorItems=[];
 let hearingRecognition=null,hearingRunning=false,hearingFinalText="",hearingFontSize=42;
 let spellingTaskId=null,spellingIndex=0;
+let wordTestTaskId=null,wordTestOrder=[],wordTestIndex=0,wordTestAnswers=[],wordTestActive=false;
 let sectionEditorItems=[];
 let selectedSectionIndex=-1;
 let studentMistakes=JSON.parse(localStorage.getItem("v75mistakes")||"{}");
@@ -108,7 +109,7 @@ async function loadStudentCloudState(){
    // 学生端仅通过 current 保存自己的资料。
    save(); // 只写本地缓存，且学生身份不会写 teacher/state
  }finally{suppressCloudSave=false}
- renderTasks();renderPoints();renderTaskAttemptStatus();renderMistakeBook();renderSectionStudy();updateEyeLimitUI();updateGate();
+ renderTasks();renderWordTasks();renderPoints();renderTaskAttemptStatus();renderMistakeBook();renderSectionStudy();updateEyeLimitUI();updateGate();updateStudentAccountUI();
 }
 async function initCloud(){
  cloudReadyForTeacherSave=false;
@@ -227,6 +228,30 @@ window.stopCamera=function(preserveVerification=false){
  }
  updateGate();
 };
+
+
+window.toggleRegistrationArea=function(force){
+ const box=document.getElementById("registrationArea");if(!box)return;
+ const show=typeof force==="boolean"?force:box.classList.contains("hidden");
+ box.classList.toggle("hidden",!show);
+}
+window.scrollToStudentArea=function(id){document.getElementById(id)?.scrollIntoView({behavior:"smooth",block:"start"})}
+function updateStudentAccountUI(){
+ const logged=!!(current&&studentToken&&loginOk);
+ const welcome=document.getElementById("studentLoggedInWelcome");
+ const loginArea=document.getElementById("studentLoginArea");
+ const reg=document.getElementById("registrationArea");
+ const forgot=document.getElementById("forgotArea");
+ welcome?.classList.toggle("hidden",!logged);
+ loginArea?.classList.toggle("hidden",logged);
+ forgot?.classList.toggle("hidden",logged);
+ if(logged){
+   reg?.classList.add("hidden");
+   const t=document.getElementById("studentWelcomeText"),m=document.getElementById("studentWelcomeMeta");
+   if(t)t.textContent=`👋 ${current.name||"同学"}，欢迎回来`;
+   if(m)m.textContent=`${current.class||""} · 学生ID ${current.id||""} · 本设备已自动记住登录`;
+ }
+}
 
 // ===== 教师端登录（腾讯云） =====
 window.teacherLogin=async function(){
@@ -416,8 +441,12 @@ window.login=async function(){
    localStorage.removeItem("studentPersistentId");
    current=null;loginOk=false;const c=e?.data?.code;
    msg.textContent=c==="NOT_REGISTERED"?"该学生尚未注册，请先设置密码":c==="NEEDS_RESET"?"老师已批准重置，请重新设置密码":"学生ID或密码错误";msg.className="status bad";
+   if(c==="NOT_REGISTERED"||c==="NEEDS_RESET"){
+     document.getElementById("regStudentId").value=id;
+     toggleRegistrationArea(true);
+   }
  }
- updateGate();renderPoints();renderTaskAttemptStatus();
+ updateGate();renderPoints();renderTaskAttemptStatus();updateStudentAccountUI();
 }
 window.studentLogout=function(){
  studentToken="";persistentStudentId="";current=null;loginOk=secondOk=phraseOk=liveOk=false;eyeCalibrationReady=sessionVerificationReady=false;
@@ -425,7 +454,7 @@ window.studentLogout=function(){
  localStorage.removeItem("studentTokenPersistent");
  localStorage.removeItem("studentPersistentId");
  const msg=document.getElementById("loginMsg");if(msg){msg.textContent="已退出学生账号";msg.className="status"}
- updateGate();renderPoints();renderTaskAttemptStatus();
+ updateGate();renderPoints();renderTaskAttemptStatus();renderWordTasks();updateStudentAccountUI();
 }
 
 window.registerStudentAccount=async function(){
@@ -434,8 +463,13 @@ window.registerStudentAccount=async function(){
  if(b.password.length<6){msg.textContent="登录密码至少6位";msg.className="status bad";return}
  if(b.password!==b.password2){msg.textContent="两次密码不一致";msg.className="status bad";return}
  if(!/^\d{4,6}$/.test(b.parentPin)){msg.textContent="家长PIN需4-6位数字";msg.className="status bad";return}
- try{await CloudAPI.studentRegister(b);msg.textContent="设置成功，请用学生ID+密码登录";msg.className="status ok"}
- catch(e){msg.textContent="设置失败："+(e?.data?.error||friendlyCloudError(e));msg.className="status bad"}
+ try{
+   await CloudAPI.studentRegister(b);
+   msg.textContent="设置成功，请用刚设置的密码登录；登录成功后本设备会自动记住。";msg.className="status ok";
+   document.getElementById("studentId").value=b.id;
+   document.getElementById("studentPassword").value="";
+   setTimeout(()=>toggleRegistrationArea(false),900);
+ }catch(e){msg.textContent="设置失败："+(e?.data?.error||friendlyCloudError(e));msg.className="status bad"}
 }
 window.requestPasswordReset=async function(){
  const id=document.getElementById("forgotStudentId").value.trim(),name=document.getElementById("forgotStudentName").value.trim(),msg=document.getElementById("forgotMsg");
@@ -674,26 +708,40 @@ function normalizeVocab(task){
  return String(task.text||"").split(/\s+/).map(w=>w.trim()).filter(Boolean).map(word=>({word,zh:""}));
 }
 function renderTasks(){
- const sel=document.getElementById("taskSelect");
+ const sel=document.getElementById("taskSelect");if(!sel)return;
+ const textTasks=tasks.filter(t=>t.type==="text");
  const previous=sel.value;
- sel.innerHTML=tasks.map(t=>`<option value="${t.id}">${escapeHtml(t.title)}（${t.type==="word"?"单词":"课文"}）</option>`).join("");
- if(previous && tasks.some(t=>t.id===previous)) sel.value=previous;
+ sel.innerHTML=textTasks.length?textTasks.map(t=>`<option value="${t.id}">${escapeHtml(t.title)}</option>`).join(""):'<option value="">暂无课文任务</option>';
+ if(previous&&textTasks.some(t=>String(t.id)===String(previous)))sel.value=previous;
  sel.onchange=()=>{
    const recognized=document.getElementById("recognized"),score=document.getElementById("scoreResult");
-   if(recognized)recognized.value=""; if(score)score.innerHTML="";
-   selectedSectionIndex=-1;renderTaskDeadlineStatus();renderTaskAttemptStatus();renderWordStudy();renderSectionStudy();
+   if(recognized)recognized.value="";if(score)score.innerHTML="";
+   selectedSectionIndex=-1;renderTaskDeadlineStatus();renderTaskAttemptStatus();renderSectionStudy();
  };
- renderWordStudy();renderSectionStudy();renderTaskDeadlineStatus();
+ renderSectionStudy();renderTaskDeadlineStatus();renderTaskAttemptStatus();
 }
-function getTask(){return tasks.find(t=>t.id===document.getElementById("taskSelect").value)}
-
+function getTask(){
+ const el=document.getElementById("taskSelect");if(!el||!el.value)return null;
+ return tasks.find(t=>String(t.id)===String(el.value)&&t.type==="text")||null;
+}
+function getWordTask(){
+ const el=document.getElementById("wordTaskSelect");if(!el||!el.value)return null;
+ return tasks.find(t=>String(t.id)===String(el.value)&&t.type==="word")||null;
+}
+function renderWordTasks(){
+ const sel=document.getElementById("wordTaskSelect");if(!sel)return;
+ const wordTasks=tasks.filter(t=>t.type==="word");
+ const previous=sel.value;
+ sel.innerHTML=wordTasks.length?wordTasks.map(t=>`<option value="${t.id}">${escapeHtml(t.title)}</option>`).join(""):'<option value="">暂无单词任务</option>';
+ if(previous&&wordTasks.some(t=>String(t.id)===String(previous)))sel.value=previous;
+ sel.onchange=()=>{cancelWordTest(true);renderWordStudy();renderWordTestStatus();renderWordTaskDeadlineStatus()};
+ renderWordStudy();renderWordTestStatus();renderWordTaskDeadlineStatus();
+}
 function renderWordStudy(){
- const panel=document.getElementById("wordStudyPanel"),box=document.getElementById("wordStudyList");
- if(!panel||!box)return;
- const task=getTask();
- if(!task||task.type!=="word"){panel.classList.add("hidden");box.innerHTML="";return}
+ const box=document.getElementById("wordStudyList");if(!box)return;
+ const task=getWordTask();
+ if(!task){box.innerHTML='<div class="note">暂无单词任务。</div>';return}
  const vocab=normalizeVocab(task);
- panel.classList.remove("hidden");
  box.innerHTML=vocab.length?vocab.map((v,i)=>`
    <div class="wordStudyRow">
      <div class="en">${escapeHtml(v.word)}</div>
@@ -701,6 +749,34 @@ function renderWordStudy(){
      <button class="secondary" onclick="speakWord('${String(v.word).replace(/\\/g,"\\\\").replace(/'/g,"\\'")}')">🔊 发音</button>
      <button onclick="openSpellingMode('${task.id}',${i})">学习拼写</button>
    </div>`).join(""):'<div class="note">这个单词任务还没有单词。</div>';
+}
+function renderWordTaskDeadlineStatus(){
+ const box=document.getElementById("wordTaskDeadlineStatus");if(!box)return;
+ const task=getWordTask();
+ if(!task){box.textContent="暂无单词任务。";box.className="status";return}
+ const s=taskTimeState(task),parts=[];
+ if(s.start)parts.push("开始："+s.start.toLocaleString());
+ if(s.deadline)parts.push("截止："+s.deadline.toLocaleString());
+ if(!s.start&&!s.deadline)parts.push("未设置时间限制");
+ if(s.beforeStart){parts.push("⏳ 尚未开始");box.className="status warn"}
+ else if(s.overdue&&!s.allowLate){parts.push("⛔ 已截止，不能测试");box.className="status bad"}
+ else if(s.overdue&&s.allowLate){parts.push("⚠️ 已截止，但允许补交测试");box.className="status warn"}
+ else box.className="status ok";
+ box.textContent=parts.join(" ｜ ");
+}
+function renderWordTestStatus(){
+ const box=document.getElementById("wordTestStatus"),req=document.getElementById("wordTestRequestBox");if(!box)return;
+ if(!current){box.className="status";box.textContent="登录后可参加正式单词测试。";if(req)req.innerHTML="";return}
+ const task=getWordTask();if(!task){box.textContent="暂无单词任务";if(req)req.innerHTML="";return}
+ const info=taskAttemptInfo(current.id,task);
+ if(info.passed){
+   box.className="status ok";box.textContent=`单词测试已合格 · 获得 1 分 · 共测试 ${info.used} 次`;
+   if(req)req.innerHTML="";
+ }else{
+   box.className="status "+(info.remaining?"warn":"bad");
+   box.textContent=`正式测试已使用 ${info.used}/${info.max} 次，剩余 ${info.remaining} 次${info.extra?`（老师额外批准 ${info.extra} 次）`:""}`;
+   if(req)req.innerHTML=info.remaining===0?(info.pending?'<div class="status warn">增加次数申请已提交，等待老师审批。</div>':'<button class="warn" onclick="requestMoreWordAttempts()">申请老师增加测试次数</button>'):"";
+ }
 }
 window.speakWord=function(word){
  try{
@@ -1006,7 +1082,7 @@ async function completeRecitationAttempt(forceEyeFail=false){
 
 window.grade=function(){
  if(!recitationActive){
-   alert("请先点击“开始背诵/背单词”，系统需要在整个背诵过程中检测闭眼状态。");
+   alert("请先点击“开始课文背诵”，系统需要在整个背诵过程中检测闭眼状态。");
    return;
  }
  if(eyeCheckEnabled()&&!eyeCalibrationReady){
@@ -1096,36 +1172,41 @@ function renderTaskAttemptStatus(){
 }
 
 function renderPoints(){
- const total=document.getElementById("points");
- const history=document.getElementById("studentPointHistory");
- if(!current){if(total)total.textContent="0";if(history)history.innerHTML='<div class="note">登录后可查看历史任务积分。</div>';return}
+ const total=document.getElementById("points"),wordBox=document.getElementById("wordPoints"),textBox=document.getElementById("textPoints"),history=document.getElementById("studentPointHistory");
+ if(!current){
+   if(total)total.textContent="0";if(wordBox)wordBox.textContent="0";if(textBox)textBox.textContent="0";
+   if(history)history.innerHTML='<div class="note">登录后可查看历史任务积分。</div>';return;
+ }
  syncStudentPoints(current.id);
- if(total) total.textContent=current.points||0;
+ const passed=passedTaskRecords(current.id);
+ let wordPts=0,textPts=0;
+ passed.forEach(r=>{
+   const task=tasks.find(t=>String(t.id)===String(r.taskId));
+   if(task?.type==="word")wordPts++;
+   else if(task?.type==="text")textPts++;
+ });
+ if(total)total.textContent=current.points||0;
+ if(wordBox)wordBox.textContent=wordPts;
+ if(textBox)textBox.textContent=textPts;
  if(history){
-   const rows=[];
-   const seen=new Set();
-   // 现有任务
-   tasks.forEach(task=>{
-     const info=taskAttemptInfo(current.id,task);
-     const key="id:"+String(task.id); seen.add(key);
+   const rows=[],seen=new Set();
+   tasks.filter(t=>!String(t.id).startsWith("mistakes-")).forEach(task=>{
+     const info=taskAttemptInfo(current.id,task),key="id:"+String(task.id);seen.add(key);
      const result=info.passed?"已合格":(info.used?"未合格":"未开始");
-     rows.push({title:task.title,used:info.used,max:info.max,result,point:info.passed?1:0});
+     rows.push({type:task.type==="word"?"单词测试":"课文背诵",title:task.title,used:info.used,max:info.max,result,point:info.passed?1:0});
    });
-   // 已删除但有历史记录的任务
    const grouped={};
    records.filter(r=>String(r.studentId)===String(current.id)).forEach(r=>{
-     const key=passedTaskKey(r);
-     if(seen.has(key))return;
+     const key=passedTaskKey(r);if(seen.has(key))return;
      if(!grouped[key])grouped[key]={title:r.task||"已删除任务",used:0,passed:false};
-     grouped[key].used++; if(r.pass)grouped[key].passed=true;
+     grouped[key].used++;if(r.pass)grouped[key].passed=true;
    });
-   Object.values(grouped).forEach(g=>rows.push({title:g.title+"（已删除）",used:g.used,max:"—",result:g.passed?"已合格":"未合格",point:g.passed?1:0}));
-   history.innerHTML=`<table><tr><th>历史任务</th><th>背诵次数</th><th>结果</th><th>积分</th></tr>`+
-     rows.map(r=>`<tr><td>${escapeHtml(r.title)}</td><td>${r.used}/${r.max}</td><td>${r.result}</td><td>${r.point}</td></tr>`).join("")+`</table>`;
+   Object.values(grouped).forEach(g=>rows.push({type:"历史任务",title:g.title+"（已删除）",used:g.used,max:"—",result:g.passed?"已合格":"未合格",point:g.passed?1:0}));
+   history.innerHTML=`<table><tr><th>类型</th><th>任务</th><th>正式次数</th><th>结果</th><th>积分</th></tr>`+
+     rows.map(r=>`<tr><td>${r.type}</td><td>${escapeHtml(r.title)}</td><td>${r.used}/${r.max}</td><td>${r.result}</td><td>${r.point}</td></tr>`).join("")+`</table>`;
  }
  save();
 }
-
 window.saveSpotRate=function(){localStorage.setItem("spotRate",document.getElementById("spotRate").value)}
 function teacherFilteredStudents(){
  const q=(document.getElementById("studentSearch")?.value||"").trim().toLowerCase();
@@ -1382,28 +1463,26 @@ window.deleteTask=function(id){
 }
 
 function renderTaskTable(){
- const box=document.getElementById("taskTable"); if(!box)return;
+ const box=document.getElementById("taskTable");if(!box)return;
  if(!tasks.length){box.innerHTML='<div class="note">暂无任务</div>';return}
- box.innerHTML=tasks.map(t=>{
-   const vocab=normalizeVocab(t);
-   const content=t.type==="word"
-     ? vocab.map(v=>`${escapeHtml(v.word)}　${escapeHtml(v.zh||"")}`).join("<br>")
-     : escapeHtml(t.text);
-   const sections=normalizeSections(t); const count=t.type==="word"?vocab.length:tokenize(t.text).length;
-   return `
-   <div class="task">
+ const renderOne=t=>{
+   const vocab=normalizeVocab(t),sections=normalizeSections(t);
+   const content=t.type==="word"?vocab.map(v=>`${escapeHtml(v.word)}　${escapeHtml(v.zh||"")}`).join("<br>"):escapeHtml(t.text);
+   const count=t.type==="word"?vocab.length:tokenize(t.text).length;
+   return `<div class="task">
      <div class="row" style="align-items:center">
-       <div style="flex:2"><b>${escapeHtml(t.title)}</b><div class="note">${t.type==="word"?"单词":"课文"} · ${count} 个${t.type==="word"?"单词":"词"}${t.type==="text"&&sections.length>1?" · "+sections.length+"段":""}</div><div class="note">开始：${escapeHtml(fmtTaskTime(t.startAt))} ｜ 截止：${escapeHtml(fmtTaskTime(t.deadline))}${t.allowLate?" ｜ 可补交":""}</div></div>
+       <div style="flex:2"><b>${escapeHtml(t.title)}</b><div class="note">${t.type==="word"?"单词测试任务":"课文背诵任务"} · ${count} 个${t.type==="word"?"单词":"词"}${t.type==="text"&&sections.length>1?" · "+sections.length+"段":""}</div><div class="note">开始：${escapeHtml(fmtTaskTime(t.startAt))} ｜ 截止：${escapeHtml(fmtTaskTime(t.deadline))}${t.allowLate?" ｜ 可补交":""}</div></div>
        <button class="secondary" onclick="editTask('${t.id}')">编辑</button>
        <button class="secondary" onclick="copyTask('${t.id}')">复制</button>
        <button class="badBtn" onclick="deleteTask('${t.id}')">删除</button>
      </div>
-     <details style="margin-top:8px">
-       <summary style="cursor:pointer;font-weight:700">查看任务内容</summary>
-       <div class="taskContent">${content}</div>
-     </details>
+     <details style="margin-top:8px"><summary style="cursor:pointer;font-weight:700">查看任务内容</summary><div class="taskContent">${content}</div></details>
    </div>`;
- }).join("");
+ };
+ const words=tasks.filter(t=>t.type==="word"&&!String(t.id).startsWith("mistakes-"));
+ const texts=tasks.filter(t=>t.type==="text");
+ box.innerHTML=`<div class="taskGroupTitle">📚 单词任务</div>${words.length?words.map(renderOne).join(""):'<div class="note">暂无单词任务</div>'}
+ <div class="taskGroupTitle">📖 课文任务</div>${texts.length?texts.map(renderOne).join(""):'<div class="note">暂无课文任务</div>'}`;
 }
 
 
@@ -1475,6 +1554,82 @@ function renderRecords(){
    const eye=(r.eyeOpenMs===undefined)?"—":(Number(r.eyeOpenMs)/1000).toFixed(1)+"秒"+(r.eyeViolation?" ⚠️":"");
    return `<tr><td>${escapeHtml(r.time)}</td><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.task)}</td><td>${r.score}%</td><td>${eye}</td><td>${r.pass?"合格":"未合格"}</td><td>${r.spotCheck?"是":"否"}</td></tr>`;
  }).join("")+"</table>";
+}
+
+
+function shuffleCopy(arr){
+ const a=arr.slice();
+ for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}
+ return a;
+}
+window.startWordTest=function(){
+ if(!current||!studentToken){alert("请先登录学生账号");return}
+ const task=getWordTask();if(!task){alert("暂无单词任务");return}
+ const gate=taskSubmissionAllowed(task);if(!gate.ok){alert(gate.reason);renderWordTaskDeadlineStatus();return}
+ const info=taskAttemptInfo(current.id,task);
+ if(info.passed){alert("这个单词测试已经合格并获得积分，无需重复测试。");return}
+ if(info.remaining<=0){alert("正式测试次数已经用完，请先申请老师增加次数。");return}
+ const vocab=normalizeVocab(task);
+ if(!vocab.length){alert("这个任务还没有单词");return}
+ wordTestTaskId=task.id;
+ wordTestOrder=shuffleCopy(vocab.map((v,i)=>({ ...v,sourceIndex:i })));
+ wordTestIndex=0;wordTestAnswers=[];wordTestActive=true;
+ document.getElementById("wordTestPanel")?.classList.remove("hidden");
+ document.getElementById("wordTestResult").innerHTML="";
+ renderWordTestQuestion();
+}
+function currentWordTestItem(){return wordTestOrder[wordTestIndex]||null}
+function renderWordTestQuestion(){
+ const v=currentWordTestItem();if(!v)return;
+ document.getElementById("wordTestProgress").textContent=`第 ${wordTestIndex+1} / ${wordTestOrder.length} 题`;
+ document.getElementById("wordTestChinese").textContent=v.zh||"请听发音后拼写";
+ const input=document.getElementById("wordTestInput");input.value="";setTimeout(()=>input.focus(),50);
+}
+window.playWordTestAudio=function(){const v=currentWordTestItem();if(v)speakWord(v.word)}
+window.nextWordTestQuestion=function(){
+ if(!wordTestActive)return;
+ const v=currentWordTestItem();if(!v)return;
+ const ans=document.getElementById("wordTestInput").value.trim();
+ if(!ans){alert("请先填写本题答案");return}
+ wordTestAnswers.push({word:v.word,zh:v.zh||"",answer:ans,correct:ans.toLowerCase()===String(v.word).trim().toLowerCase()});
+ if(wordTestIndex<wordTestOrder.length-1){wordTestIndex++;renderWordTestQuestion()}
+ else finishWordTest();
+}
+async function finishWordTest(){
+ if(!wordTestActive)return;
+ const task=tasks.find(t=>String(t.id)===String(wordTestTaskId));if(!task)return;
+ wordTestActive=false;
+ const correct=wordTestAnswers.filter(x=>x.correct).length,total=wordTestAnswers.length;
+ const score=total?Math.round(correct/total*100):0;
+ wordTestAnswers.filter(x=>!x.correct).forEach(x=>addMistake(x.word,x.zh));
+ const panel=document.getElementById("wordTestPanel");panel?.classList.add("hidden");
+ const result=document.getElementById("wordTestResult");
+ result.innerHTML='<div class="status warn">正在提交测试成绩…</div>';
+ try{
+   await CloudAPI.submitAttempt(studentToken,{taskId:task.id,score,eyeOpenMs:0,eyeViolation:false,spotCheck:false});
+   await loadStudentCloudState();
+ }catch(e){
+   result.innerHTML=`<div class="status bad">成绩提交失败：${escapeHtml(friendlyCloudError(e))}</div>`;
+   renderWordTestStatus();return;
+ }
+ const passed=score>=80;
+ const rows=wordTestAnswers.map(x=>`<tr><td>${escapeHtml(x.zh)}</td><td>${escapeHtml(x.word)}</td><td>${escapeHtml(x.answer)}</td><td>${x.correct?"✅":"❌"}</td></tr>`).join("");
+ result.innerHTML=`<div class="big">${score}%</div>
+   <div class="status ${passed?"ok":"bad"}">${passed?"单词测试合格，本任务获得 1 分":"未达到 80%，本次计入一次正式测试机会"}</div>
+   <div class="tablewrap"><table class="wordTestResultTable"><tr><th>中文</th><th>正确拼写</th><th>你的答案</th><th>结果</th></tr>${rows}</table></div>`;
+ renderWordTestStatus();renderPoints();renderMistakeBook();
+}
+window.cancelWordTest=function(silent=false){
+ if(wordTestActive&&!silent&&!confirm("确定退出本次测试吗？未提交的测试不会占次数。"))return;
+ wordTestActive=false;wordTestTaskId=null;wordTestOrder=[];wordTestIndex=0;wordTestAnswers=[];
+ document.getElementById("wordTestPanel")?.classList.add("hidden");
+ if(!silent){const r=document.getElementById("wordTestResult");if(r)r.innerHTML='<div class="status">已退出，本次未计入测试次数。</div>'}
+}
+window.requestMoreWordAttempts=async function(){
+ if(!current){alert("请先登录");return}
+ const task=getWordTask();if(!task)return;
+ try{await CloudAPI.requestExtra(studentToken,task.id);await loadStudentCloudState();alert("申请已提交，请等待老师审批")}
+ catch(e){alert("申请失败："+(e?.data?.error||friendlyCloudError(e)))}
 }
 
 // ===== 免登录：老人听障语音转文字 =====
@@ -1562,7 +1717,7 @@ window.practiceMistakes=function(){
  const id="mistakes-"+current.id;
  const fake={id,type:"word",title:"我的错词",vocab:rows.map(x=>({word:x.word,zh:x.zh})),text:rows.map(x=>x.word).join(" ")};
  const old=tasks.findIndex(t=>String(t.id)===id); if(old>=0)tasks[old]=fake; else tasks.push(fake);
- renderTasks();document.getElementById("taskSelect").value=id;renderWordStudy();openSpellingMode(id,0);
+ renderWordTasks();const sel=document.getElementById("wordTaskSelect");if(sel)sel.value=id;renderWordStudy();openSpellingMode(id,0);
 }
 function renderTeacherMistakeStats(){
  const box=document.getElementById("teacherMistakeStats");if(!box)return;
@@ -1622,8 +1777,9 @@ window.nextSpellingWord=function(){
 }
 
 function escapeHtml(s){return String(s).replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]))}
-function renderAll(){renderTasks();renderStudents();renderTaskTable();renderRecords();renderApprovals();renderPasswordResetRequests();renderPoints();updateEyeLimitUI();updateGate();renderTaskAttemptStatus();renderWordEditorRows();renderSectionEditorRows();toggleTaskEditor();renderMistakeBook();renderTeacherMistakeStats();renderSectionStudy();renderTaskDeadlineStatus();refreshTeacherFilters();}
+function renderAll(){renderTasks();renderWordTasks();renderStudents();renderTaskTable();renderRecords();renderApprovals();renderPasswordResetRequests();renderPoints();updateEyeLimitUI();updateGate();renderTaskAttemptStatus();renderWordEditorRows();renderSectionEditorRows();toggleTaskEditor();renderMistakeBook();renderTeacherMistakeStats();renderSectionStudy();renderTaskDeadlineStatus();renderWordTaskDeadlineStatus();refreshTeacherFilters();updateStudentAccountUI();}
 renderAll();
 updateTeacherVisibility();
+updateStudentAccountUI();
 
 window.addEventListener("load",()=>initCloud());
