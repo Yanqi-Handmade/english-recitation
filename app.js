@@ -26,9 +26,12 @@ let spellingTaskId=null,spellingIndex=0;
 let sectionEditorItems=[];
 let selectedSectionIndex=-1;
 let studentMistakes=JSON.parse(localStorage.getItem("v75mistakes")||"{}");
-let teacherToken=sessionStorage.getItem("teacherToken")||"";
-let studentToken=sessionStorage.getItem("studentToken")||"";
-let cloudSyncTimer=null,suppressCloudSave=false;
+let appSettings=JSON.parse(localStorage.getItem("v76settings")||"null")||{eyeLimitMs:3000};
+let selectedStudentIds=new Set();
+let teacherToken=localStorage.getItem("teacherTokenPersistent")||sessionStorage.getItem("teacherToken")||"";
+let studentToken=localStorage.getItem("studentTokenPersistent")||sessionStorage.getItem("studentToken")||"";
+let persistentStudentId=localStorage.getItem("studentPersistentId")||"";
+let cloudSyncTimer=null,suppressCloudSave=false,cloudReadyForTeacherSave=false;
 let teacherLoggedIn=!!teacherToken;
 
 function save(){
@@ -38,15 +41,22 @@ function save(){
  localStorage.setItem("v53approvals",JSON.stringify(approvals));
  localStorage.setItem("v54passwordResetRequests",JSON.stringify(passwordResetRequests));
  localStorage.setItem("v75mistakes",JSON.stringify(studentMistakes));
- if(!suppressCloudSave&&teacherLoggedIn&&teacherToken&&window.CloudAPI?.configured()){
+ localStorage.setItem("v76settings",JSON.stringify(appSettings));
+ if(!suppressCloudSave&&cloudReadyForTeacherSave&&teacherLoggedIn&&teacherToken&&!studentToken&&window.CloudAPI?.configured()){
    clearTimeout(cloudSyncTimer);
    cloudSyncTimer=setTimeout(async()=>{
      try{
        await CloudAPI.teacherSaveState(teacherToken,{
          students:students.map(s=>({id:s.id,name:s.name,class:s.class,registrationCode:s.registrationCode||"",registered:!!s.registered,needsPasswordReset:!!s.needsPasswordReset,points:Number(s.points)||0})),
-         tasks,records,approvals,passwordResetRequests
+         tasks,records,approvals,passwordResetRequests,settings:appSettings,rosterMode:"merge-safe"
        });
        setCloudStatus("云端已同步","ok");
+       const rosterSummary=document.getElementById("cloudRosterSummary");
+       if(rosterSummary&&teacherLoggedIn){
+         const registered=students.filter(s=>s.registered).length;
+         rosterSummary.textContent=`云端学生 ${students.length} 人 · 已注册 ${registered} 人 · 未注册 ${students.length-registered} 人`;
+         rosterSummary.className="status ok";
+       }
      }catch(e){setCloudStatus("云端同步失败："+friendlyCloudError(e),"bad")}
    },350);
  }
@@ -64,24 +74,80 @@ function friendlyCloudError(e){
 }
 function setCloudStatus(t,k=""){const el=document.getElementById("cloudStatus");if(el){el.textContent=t;el.className="status "+k}}
 async function loadTeacherCloudState(){
+ cloudReadyForTeacherSave=false;
  const d=await CloudAPI.teacherState(teacherToken);
  suppressCloudSave=true;
- students=d.students||[];tasks=d.tasks||[];records=d.records||[];approvals=d.approvals||[];passwordResetRequests=d.passwordResetRequests||[];
- suppressCloudSave=false;save();renderAll();
+ try{
+   students=d.students||[];
+   tasks=d.tasks||[];
+   records=d.records||[];
+   approvals=d.approvals||[];
+   passwordResetRequests=d.passwordResetRequests||[];
+   appSettings={eyeLimitMs:3000,...(d.settings||{})};
+   save(); // 这里只更新本地缓存，suppressCloudSave=true，不回写云端
+ }finally{suppressCloudSave=false}
+ cloudReadyForTeacherSave=true;
+ const summary=document.getElementById("cloudRosterSummary");
+ if(summary){
+   const registered=students.filter(s=>s.registered).length;
+   summary.textContent=`云端学生 ${students.length} 人 · 已注册 ${registered} 人 · 未注册 ${students.length-registered} 人`;
+   summary.className="status ok";
+ }
+ renderAll();
 }
 async function loadStudentCloudState(){
  const d=await CloudAPI.studentState(studentToken);
  suppressCloudSave=true;
- current=d.profile||current;tasks=d.tasks||[];records=d.records||[];approvals=d.approvals||[];
- students=current?[current]:[];
- suppressCloudSave=false;save();renderAll();
+ try{
+   current=d.profile||current;
+   tasks=d.tasks||[];
+   records=d.records||[];
+   approvals=d.approvals||[];
+   appSettings={eyeLimitMs:3000,...(d.settings||{})};
+   // 关键修复：学生端不再执行 students=[current]，全班名册只属于教师端。
+   // 学生端仅通过 current 保存自己的资料。
+   save(); // 只写本地缓存，且学生身份不会写 teacher/state
+ }finally{suppressCloudSave=false}
+ renderTasks();renderPoints();renderTaskAttemptStatus();renderMistakeBook();renderSectionStudy();updateEyeLimitUI();updateGate();
 }
 async function initCloud(){
+ cloudReadyForTeacherSave=false;
  if(!window.CloudAPI?.configured()){setCloudStatus("尚未配置腾讯云：请编辑 config.js","warn");return}
  try{
    const h=await CloudAPI.request("/health");setCloudStatus("腾讯云已连接 · "+(h.storage||"COS"),"ok");
-   if(teacherToken){try{teacherLoggedIn=true;await loadTeacherCloudState();updateTeacherVisibility()}catch(e){teacherToken="";teacherLoggedIn=false;sessionStorage.removeItem("teacherToken")}}
-   else if(studentToken){try{await loadStudentCloudState();loginOk=!!current;updateGate()}catch(e){studentToken="";sessionStorage.removeItem("studentToken")}}
+   if(teacherToken){
+     // 当前 tab 如果已有教师会话，教师身份优先，并清除学生身份，避免双身份并存。
+     studentToken="";persistentStudentId="";
+     sessionStorage.removeItem("studentToken");
+     localStorage.removeItem("studentTokenPersistent");
+     localStorage.removeItem("studentPersistentId");
+     try{
+       teacherLoggedIn=true;
+       await loadTeacherCloudState();
+       updateTeacherVisibility();
+       return;
+     }catch(e){
+       teacherToken="";teacherLoggedIn=false;cloudReadyForTeacherSave=false;
+       sessionStorage.removeItem("teacherToken");
+       localStorage.removeItem("teacherTokenPersistent");
+     }
+   }
+   if(studentToken){
+     try{
+       teacherLoggedIn=false;teacherToken="";cloudReadyForTeacherSave=false;
+       sessionStorage.removeItem("teacherToken");
+       await loadStudentCloudState();
+       loginOk=!!current;
+       const msg=document.getElementById("loginMsg");
+       if(msg&&current){msg.textContent=`本设备已自动登录：${current.name}（${current.class}）`;msg.className="status ok"}
+       updateGate();
+     }catch(e){
+       studentToken="";persistentStudentId="";
+       sessionStorage.removeItem("studentToken");
+       localStorage.removeItem("studentTokenPersistent");
+       localStorage.removeItem("studentPersistentId");
+     }
+   }
  }catch(e){setCloudStatus("腾讯云连接失败："+friendlyCloudError(e),"bad")}
 }
 
@@ -166,13 +232,39 @@ window.stopCamera=function(preserveVerification=false){
 window.teacherLogin=async function(){
  const u=document.getElementById("teacherUser").value.trim(),p=document.getElementById("teacherPassword").value;
  const msg=document.getElementById("teacherLoginMsg");
- try{const d=await CloudAPI.teacherLogin(u,p);teacherToken=d.token;sessionStorage.setItem("teacherToken",teacherToken);teacherLoggedIn=true;msg.textContent="教师端登录成功";msg.className="status ok";await loadTeacherCloudState();updateTeacherVisibility()}
- catch(e){teacherLoggedIn=false;msg.textContent="教师登录失败："+friendlyCloudError(e);msg.className="status bad"}
+ try{
+   const d=await CloudAPI.teacherLogin(u,p);
+   // 教师与学生会话互斥
+   studentToken="";persistentStudentId="";current=null;loginOk=false;
+   sessionStorage.removeItem("studentToken");
+   localStorage.removeItem("studentTokenPersistent");
+   localStorage.removeItem("studentPersistentId");
+   teacherToken=d.token;
+   sessionStorage.setItem("teacherToken",teacherToken);
+   localStorage.setItem("teacherTokenPersistent",teacherToken);
+   teacherLoggedIn=true;cloudReadyForTeacherSave=false;
+   msg.textContent="教师端登录成功";msg.className="status ok";
+   await loadTeacherCloudState();
+   updateTeacherVisibility();
+ }catch(e){
+   teacherLoggedIn=false;cloudReadyForTeacherSave=false;
+   msg.textContent="教师登录失败："+friendlyCloudError(e);msg.className="status bad";
+ }
 };
-window.teacherLogout=function(){teacherLoggedIn=false;teacherToken="";sessionStorage.removeItem("teacherToken");updateTeacherVisibility()};
+window.teacherLogout=function(){
+ try{stopHearingRecognition()}catch(e){}
+ document.getElementById("hearingOverlay")?.classList.remove("open");
+ document.body.style.overflow="";
+ teacherLoggedIn=false;teacherToken="";cloudReadyForTeacherSave=false;
+ sessionStorage.removeItem("teacherToken");
+ localStorage.removeItem("teacherTokenPersistent");
+ updateTeacherVisibility();
+};
 function updateTeacherVisibility(){
  const box=document.getElementById("teacherProtected");if(box)box.classList.toggle("hidden",!teacherLoggedIn);
- const msg=document.getElementById("teacherLoginMsg");if(msg&&teacherLoggedIn){msg.textContent="教师端已登录（云端）";msg.className="status ok"}
+ const loginCard=document.getElementById("teacherLoginCard");if(loginCard)loginCard.classList.toggle("hidden",teacherLoggedIn);
+ const msg=document.getElementById("teacherLoginMsg");
+ if(msg&&teacherLoggedIn){msg.textContent="教师端已登录（本设备已记住）";msg.className="status ok"}
  if(teacherLoggedIn){renderApprovals();renderPasswordResetRequests()}
 }
 
@@ -283,23 +375,59 @@ window.resetImport=function(){
  document.getElementById("confirmImportBtn").disabled=true;
 }
 
-window.clearStudents=function(){
- if(confirm("确认清空当前浏览器中的全部学生名单吗？此操作不会删除任务和背诵记录。")){
-   students=[];current=null;loginOk=secondOk=phraseOk=liveOk=false;save();renderStudents();renderPoints();updateGate();
- }
+window.clearStudents=async function(){
+ if(!teacherLoggedIn){alert("请先登录教师端");return}
+ if(!confirm("确认清空云端全部学生名单吗？此操作不会删除任务和历史背诵记录。"))return;
+ suppressCloudSave=true;
+ try{
+   await CloudAPI.teacherReplaceRoster(teacherToken,{students:[],tasks,records,approvals,passwordResetRequests,settings:appSettings});
+   students=[];selectedStudentIds.clear();
+   localStorage.setItem("v5students","[]");
+   renderStudents();
+   const summary=document.getElementById("cloudRosterSummary");
+   if(summary){summary.textContent="云端学生 0 人";summary.className="status ok"}
+   setCloudStatus("云端学生名单已清空","ok");
+ }catch(e){
+   alert("清空失败："+friendlyCloudError(e));
+   await loadTeacherCloudState();
+ }finally{suppressCloudSave=false}
 }
 
 window.login=async function(){
  const id=document.getElementById("studentId").value.trim(),pw=document.getElementById("studentPassword").value,msg=document.getElementById("loginMsg");
  try{
-   const d=await CloudAPI.studentLogin(id,pw);studentToken=d.token;sessionStorage.setItem("studentToken",studentToken);current=d.profile;loginOk=true;secondOk=phraseOk=liveOk=false;eyeCalibrationReady=sessionVerificationReady=false;
-   msg.textContent=`登录成功：${current.name}（${current.class}）`;msg.className="status ok";await loadStudentCloudState()
+   const d=await CloudAPI.studentLogin(id,pw);
+   // 学生与教师会话互斥，学生永远不能触发 teacher/state 写入
+   teacherLoggedIn=false;teacherToken="";cloudReadyForTeacherSave=false;
+   sessionStorage.removeItem("teacherToken");
+   localStorage.removeItem("teacherTokenPersistent");
+   studentToken=d.token;
+   sessionStorage.setItem("studentToken",studentToken);
+   localStorage.setItem("studentTokenPersistent",studentToken);
+   localStorage.setItem("studentPersistentId",String(id));
+   persistentStudentId=String(id);
+   current=d.profile;loginOk=true;secondOk=phraseOk=liveOk=false;eyeCalibrationReady=sessionVerificationReady=false;
+   msg.textContent=`登录成功：${current.name}（${current.class}），本设备已记住登录`;msg.className="status ok";
+   await loadStudentCloudState();
  }catch(e){
+   studentToken="";persistentStudentId="";
+   sessionStorage.removeItem("studentToken");
+   localStorage.removeItem("studentTokenPersistent");
+   localStorage.removeItem("studentPersistentId");
    current=null;loginOk=false;const c=e?.data?.code;
-   msg.textContent=c==="NOT_REGISTERED"?"该学生尚未注册，请先设置密码":c==="NEEDS_RESET"?"老师已批准重置，请重新设置密码":"学生ID或密码错误";msg.className="status bad"
+   msg.textContent=c==="NOT_REGISTERED"?"该学生尚未注册，请先设置密码":c==="NEEDS_RESET"?"老师已批准重置，请重新设置密码":"学生ID或密码错误";msg.className="status bad";
  }
- updateGate();renderPoints();renderTaskAttemptStatus()
+ updateGate();renderPoints();renderTaskAttemptStatus();
 }
+window.studentLogout=function(){
+ studentToken="";persistentStudentId="";current=null;loginOk=secondOk=phraseOk=liveOk=false;eyeCalibrationReady=sessionVerificationReady=false;
+ sessionStorage.removeItem("studentToken");
+ localStorage.removeItem("studentTokenPersistent");
+ localStorage.removeItem("studentPersistentId");
+ const msg=document.getElementById("loginMsg");if(msg){msg.textContent="已退出学生账号";msg.className="status"}
+ updateGate();renderPoints();renderTaskAttemptStatus();
+}
+
 window.registerStudentAccount=async function(){
  const b={id:document.getElementById("regStudentId").value.trim(),name:document.getElementById("regStudentName").value.trim(),registrationCode:document.getElementById("regCode").value.trim(),password:document.getElementById("regPassword").value,password2:document.getElementById("regPassword2").value,parentPin:document.getElementById("regParentPin").value.trim()};
  const msg=document.getElementById("registerMsg");
@@ -389,20 +517,95 @@ window.beginEyeCalibration=async function(){
  if(!ok && btn){btn.disabled=false;btn.textContent="重新开始睁眼/闭眼校准";}
 }
 
+
+function getEyeLimitMs(){const n=Number(appSettings?.eyeLimitMs);return Number.isFinite(n)&&n>=0?n:3000}
+function eyeCheckEnabled(){return getEyeLimitMs()>0}
+function eyeGateReady(){return !eyeCheckEnabled()||eyeCalibrationReady}
+function baseVerificationOk(){return loginOk&&secondOk&&phraseOk&&liveOk&&eyeGateReady()&&(!eyeCheckEnabled()||sessionVerificationReady)}
+function eyeLimitLabel(){
+ const ms=getEyeLimitMs();
+ if(ms===0)return "已关闭";
+ return (ms/1000).toFixed(ms%1000?1:0)+" 秒";
+}
+function updateEyeLimitUI(){
+ const preset=document.getElementById("eyeLimitPreset"),wrap=document.getElementById("eyeLimitCustomWrap"),custom=document.getElementById("eyeLimitCustom"),status=document.getElementById("eyeLimitStatus");
+ if(!preset)return;
+ const ms=getEyeLimitMs(), known=[0,1000,3000,5000];
+ preset.value=known.includes(ms)?String(ms):"custom";
+ wrap?.classList.toggle("hidden",preset.value!=="custom");
+ if(custom&&preset.value==="custom")custom.value=(ms/1000).toFixed(ms%1000?1:0);
+ if(status){status.textContent=ms===0?"当前：已关闭闭眼限制":"当前允许累计睁眼："+eyeLimitLabel();status.className="status ok"}
+ const timer=document.getElementById("eyeOpenTime");
+ if(timer)timer.textContent=ms===0?"闭眼限制已关闭":`累计睁眼：0.0 / ${(ms/1000).toFixed(1)} 秒`;
+ const note=document.getElementById("eyeCalibrationStatus");
+ if(ms===0&&note){note.className="status ok";note.textContent="教师已关闭闭眼限制，本次无需眼睛校准";}
+ updateGate();
+}
+window.changeEyeLimitPreset=function(){
+ const v=document.getElementById("eyeLimitPreset").value;
+ document.getElementById("eyeLimitCustomWrap")?.classList.toggle("hidden",v!=="custom");
+ if(v==="custom")return;
+ appSettings.eyeLimitMs=Number(v);save();updateEyeLimitUI();
+}
+window.saveCustomEyeLimit=function(){
+ const sec=Number(document.getElementById("eyeLimitCustom").value);
+ if(!Number.isFinite(sec)||sec<0.5||sec>30){alert("自定义阈值请输入 0.5～30 秒");return}
+ appSettings.eyeLimitMs=Math.round(sec*1000);save();updateEyeLimitUI();
+}
+
 function updateGate(){
- [["c1",loginOk],["c2",secondOk],["c3",phraseOk],["c4",liveOk],["c5",eyeCalibrationReady]].forEach(([id,ok])=>{
+ [["c1",loginOk],["c2",secondOk],["c3",phraseOk],["c4",liveOk]].forEach(([id,ok])=>{
    const el=document.getElementById(id);
    if(el){el.textContent=ok?"已通过":"未通过"; el.className=ok?"pass":"fail";}
  });
- const ok=loginOk&&secondOk&&phraseOk&&liveOk&&eyeCalibrationReady&&sessionVerificationReady;
+ const eye=document.getElementById("c5");
+ if(eye){
+   if(!eyeCheckEnabled()){eye.textContent="已关闭";eye.className="pass"}
+   else {eye.textContent=eyeCalibrationReady?"已通过":"未通过";eye.className=eyeCalibrationReady?"pass":"fail"}
+ }
+ const ok=baseVerificationOk();
  const gate=document.getElementById("gate");
- gate.textContent=ok?"全部核验通过，可以开始背诵":"核验未完成，请依次完成到“睁眼/闭眼校准”";
+ gate.textContent=ok?"全部核验通过，可以开始背诵":(eyeCheckEnabled()?"核验未完成，请依次完成到“睁眼/闭眼校准”":"核验未完成，请完成账号、第二步核验、随机口令和活体检测");
  gate.className="status "+(ok?"ok":"bad");
  document.getElementById("speechBtn").disabled=!ok;
  document.getElementById("gradeBtn").disabled=true;
  renderTaskAttemptStatus();
 }
 
+
+
+function parseTaskTime(v){
+ if(!v)return null;
+ const d=new Date(v);
+ return isNaN(d.getTime())?null:d;
+}
+function taskTimeState(task){
+ const now=new Date(),start=parseTaskTime(task?.startAt),deadline=parseTaskTime(task?.deadline);
+ return {start,deadline,beforeStart:!!start&&now<start,overdue:!!deadline&&now>deadline,allowLate:!!task?.allowLate};
+}
+function fmtTaskTime(v){
+ const d=parseTaskTime(v);return d?d.toLocaleString():"未设置";
+}
+function taskSubmissionAllowed(task){
+ const s=taskTimeState(task);
+ if(s.beforeStart)return {ok:false,reason:"任务尚未到开始时间"};
+ if(s.overdue&&!s.allowLate)return {ok:false,reason:"任务已超过截止时间"};
+ return {ok:true,reason:""};
+}
+function renderTaskDeadlineStatus(){
+ const box=document.getElementById("taskDeadlineStatus");if(!box)return;
+ const task=getTask();
+ if(!task){box.textContent="请选择任务查看时间要求。";box.className="status";return}
+ const s=taskTimeState(task),parts=[];
+ if(s.start)parts.push("开始："+s.start.toLocaleString());
+ if(s.deadline)parts.push("截止："+s.deadline.toLocaleString());
+ if(!s.start&&!s.deadline)parts.push("未设置时间限制");
+ if(s.beforeStart){parts.push("⏳ 尚未开始");box.className="status warn"}
+ else if(s.overdue&&!s.allowLate){parts.push("⛔ 已截止，不能再提交");box.className="status bad"}
+ else if(s.overdue&&s.allowLate){parts.push("⚠️ 已截止，但教师允许补交");box.className="status warn"}
+ else box.className="status ok";
+ box.textContent=parts.join(" ｜ ");
+}
 
 function normalizeSections(task){
  if(!task||task.type!=="text")return [];
@@ -478,9 +681,9 @@ function renderTasks(){
  sel.onchange=()=>{
    const recognized=document.getElementById("recognized"),score=document.getElementById("scoreResult");
    if(recognized)recognized.value=""; if(score)score.innerHTML="";
-   selectedSectionIndex=-1;renderTaskAttemptStatus();renderWordStudy();renderSectionStudy();
+   selectedSectionIndex=-1;renderTaskDeadlineStatus();renderTaskAttemptStatus();renderWordStudy();renderSectionStudy();
  };
- renderWordStudy();renderSectionStudy();
+ renderWordStudy();renderSectionStudy();renderTaskDeadlineStatus();
 }
 function getTask(){return tasks.find(t=>t.id===document.getElementById("taskSelect").value)}
 
@@ -509,18 +712,20 @@ window.speakWord=function(word){
 }
 
 window.startRecitationSpeech=async function(){
- const baseOk=loginOk&&secondOk&&phraseOk&&liveOk&&eyeCalibrationReady&&sessionVerificationReady;
+ const baseOk=baseVerificationOk();
  if(!baseOk||!current){
-   alert("请先完成登录、第二步核验、随机口令、活体检测和睁眼/闭眼校准");
+   alert(eyeCheckEnabled()?"请先完成登录、第二步核验、随机口令、活体检测和睁眼/闭眼校准":"请先完成登录、第二步核验、随机口令和活体检测");
    return;
  }
- if(!window.hasEyeCalibration?.()){
+ if(eyeCheckEnabled()&&!window.hasEyeCalibration?.()){
    alert("请先在上方视频区域完成睁眼/闭眼校准。");
    return;
  }
 
  const task=getTask();
  if(!task){alert("当前没有背诵任务");return}
+ const timeGate=taskSubmissionAllowed(task);
+ if(!timeGate.ok){alert(timeGate.reason);renderTaskDeadlineStatus();return}
  const info=taskAttemptInfo(current.id,task);
  if(info.passed){alert("这个任务已经合格，不需要再次背诵。");return}
  if(info.used>=info.max){alert("本任务背诵次数已经用完，请先申请老师增加次数。");return}
@@ -541,7 +746,7 @@ window.startRecitationSpeech=async function(){
    eyeStatus.className="status";
    eyeStatus.textContent="等待麦克风允许后才开始闭眼计时";
  }
- if(eyeTime) eyeTime.textContent="累计睁眼：0.0 / 3.0 秒";
+ if(eyeTime) eyeTime.textContent=eyeCheckEnabled()?`累计睁眼：0.0 / ${(getEyeLimitMs()/1000).toFixed(1)} 秒`:"闭眼限制已关闭";
 
  let finalText="";
  let micStarted=false;
@@ -621,7 +826,7 @@ window.startRecitationSpeech=async function(){
      eyeStatus.className="status bad";
      eyeStatus.textContent="麦克风尚未启动，本次没有开始背诵，也没有累计睁眼时间";
    }
-   if(eyeTime)eyeTime.textContent="累计睁眼：0.0 / 3.0 秒";
+   if(eyeTime)eyeTime.textContent=eyeCheckEnabled()?`累计睁眼：0.0 / ${(getEyeLimitMs()/1000).toFixed(1)} 秒`:"闭眼限制已关闭";
    if(String(e.message)==="mic-timeout"){
      speechStatus.className="status bad";
      speechStatus.textContent="等待麦克风授权超时，请重新点击开始";
@@ -641,15 +846,17 @@ window.startRecitationSpeech=async function(){
    }
  }
 
- // 摄像头就绪后才从0开始本次闭眼计时。
- const monitor=await window.startClosedEyeSession?.(3000);
- if(!monitor?.ok){
-   try{recognition.stop()}catch(e){}
-   const reason=monitor?.reason;
-   speechStatus.className="status bad";
-   speechStatus.textContent="闭眼检测启动失败，本次未开始";
-   alert(reason==="calibration"?"眼睛校准已失效，请重新完成视频校准。":"闭眼检测启动失败，请重试。");
-   return;
+ // 摄像头就绪后才从0开始本次闭眼计时；教师关闭闭眼限制时跳过。
+ if(eyeCheckEnabled()){
+   const monitor=await window.startClosedEyeSession?.(getEyeLimitMs());
+   if(!monitor?.ok){
+     try{recognition.stop()}catch(e){}
+     const reason=monitor?.reason;
+     speechStatus.className="status bad";
+     speechStatus.textContent="闭眼检测启动失败，本次未开始";
+     alert(reason==="calibration"?"眼睛校准已失效，请重新完成视频校准。":"闭眼检测启动失败，请重试。");
+     return;
+   }
  }
 
  // 正式开始：此刻起才允许语音结果写入，并从0累计睁眼时间。
@@ -660,12 +867,12 @@ window.startRecitationSpeech=async function(){
  lastEyeStats={openMs:0,violation:false};
 
  speechStatus.className="status ok";
- speechStatus.textContent="🎤 麦克风已启动，正在语音识别，请保持闭眼背诵";
+ speechStatus.textContent=eyeCheckEnabled()?"🎤 麦克风已启动，正在语音识别，请保持闭眼背诵":"🎤 麦克风已启动，闭眼限制已关闭";
  if(eyeStatus){
    eyeStatus.className="status ok";
-   eyeStatus.textContent="正式背诵已开始，闭眼计时从 0 秒开始";
+   eyeStatus.textContent=eyeCheckEnabled()?"正式背诵已开始，闭眼计时从 0 秒开始":"正式背诵已开始，本次不启用闭眼限制";
  }
- if(eyeTime)eyeTime.textContent="累计睁眼：0.0 / 3.0 秒";
+ if(eyeTime)eyeTime.textContent=eyeCheckEnabled()?`累计睁眼：0.0 / ${(getEyeLimitMs()/1000).toFixed(1)} 秒`:"闭眼限制已关闭";
 
  updateRecitationButtons();
 }
@@ -726,8 +933,10 @@ function passedTaskRecords(studentId){
  return out;
 }
 function syncStudentPoints(studentId){
+ const pts=passedTaskRecords(studentId).length;
  const s=students.find(x=>String(x.id)===String(studentId));
- if(s) s.points=passedTaskRecords(studentId).length;
+ if(s)s.points=pts;
+ if(current&&String(current.id)===String(studentId))current.points=pts;
 }
 
 async function completeRecitationAttempt(forceEyeFail=false){
@@ -736,6 +945,8 @@ async function completeRecitationAttempt(forceEyeFail=false){
  recitationCompleting=true;
 
  const task=getTask();
+ const timeGate=taskSubmissionAllowed(task);
+ if(!timeGate.ok){recitationCompleting=false;alert(timeGate.reason);renderTaskDeadlineStatus();return}
  const info=taskAttemptInfo(current.id,task);
  if(info.passed||info.used>=info.max){
    recitationCompleting=false;return;
@@ -751,7 +962,8 @@ async function completeRecitationAttempt(forceEyeFail=false){
  try{recognition&&recognition.stop()}catch(e){}
  const eyeStats=window.stopClosedEyeSession?.()||{openMs:0,violation:false};
  lastEyeStats=eyeStats;
- const eyeViolation=forceEyeFail||eyeStats.violation||eyeStats.openMs>3000;
+ const limitMs=getEyeLimitMs();
+ const eyeViolation=limitMs>0&&(forceEyeFail||eyeStats.violation||eyeStats.openMs>limitMs);
 
  // 提交后必须关闭摄像头。下一次开始会重新打开并重新计时。
  window.stopCamera(true);
@@ -774,10 +986,10 @@ async function completeRecitationAttempt(forceEyeFail=false){
  const eyeSec=((eyeStats.openMs||0)/1000).toFixed(1);
  let result=`<div class="big">${score}%</div>`;
  if(eyeViolation){
-   result+=`<div class="status bad">本次未通过：累计睁眼 ${eyeSec} 秒，超过允许的 3 秒。本次已计入一次背诵机会。</div>`;
+   result+=`<div class="status bad">本次未通过：累计睁眼 ${eyeSec} 秒，超过允许的 ${(limitMs/1000).toFixed(1)} 秒。本次已计入一次背诵机会。</div>`;
  }else{
    result+=`<div class="status ${pass?"ok":"bad"}">${pass?"合格，本任务获得 1 分":"未合格，需要达到 80%"}</div>`;
-   result+=`<div class="status ok">闭眼检测通过：累计睁眼 ${eyeSec} / 3.0 秒</div>`;
+   result+=limitMs>0?`<div class="status ok">闭眼检测通过：累计睁眼 ${eyeSec} / ${(limitMs/1000).toFixed(1)} 秒</div>`:`<div class="status">本次教师已关闭闭眼限制</div>`;
  }
  if(!pass){
    result+=`<div class="status ${after.remaining>0?"warn":"bad"}">本任务已使用 ${after.used}/${after.max} 次；剩余 ${after.remaining} 次。</div>`;
@@ -797,7 +1009,7 @@ window.grade=function(){
    alert("请先点击“开始背诵/背单词”，系统需要在整个背诵过程中检测闭眼状态。");
    return;
  }
- if(!eyeCalibrationReady){
+ if(eyeCheckEnabled()&&!eyeCalibrationReady){
    alert("请先在上方视频区域完成睁眼/闭眼校准。");
    return;
  }
@@ -828,7 +1040,7 @@ window.onPreEyeCalibrationFailed=function(){
 window.onEyeOpenLimitExceeded=function(openMs){
  lastEyeStats={openMs,violation:true};
  const box=document.getElementById("eyeMonitorStatus");
- if(box){box.className="status bad";box.textContent="累计睁眼超过 3 秒，本次自动判为未通过。";}
+ if(box){box.className="status bad";box.textContent=`累计睁眼超过 ${(getEyeLimitMs()/1000).toFixed(1)} 秒，本次自动判为未通过。`;}
  completeRecitationAttempt(true);
 };
 
@@ -875,9 +1087,10 @@ function renderTaskAttemptStatus(){
    }
  }
  // Gate the submit button additionally by attempt state.
- const baseOk=loginOk&&secondOk&&phraseOk&&liveOk&&eyeCalibrationReady&&sessionVerificationReady;
- document.getElementById("speechBtn").disabled=!baseOk||!eyeCalibrationReady||info.passed||info.remaining===0||recitationActive;
- document.getElementById("gradeBtn").disabled=!baseOk||info.passed||info.remaining===0||!recitationActive||!eyeCalibrationReady;
+ const baseOk=baseVerificationOk();
+ const timeGate=taskSubmissionAllowed(task);renderTaskDeadlineStatus();
+ document.getElementById("speechBtn").disabled=!baseOk||!timeGate.ok||info.passed||info.remaining===0||recitationActive;
+ document.getElementById("gradeBtn").disabled=!baseOk||!timeGate.ok||info.passed||info.remaining===0||!recitationActive;
  const stopBtn=document.getElementById("stopSpeechBtn");
  if(stopBtn)stopBtn.disabled=!recitationActive;
 }
@@ -914,16 +1127,128 @@ function renderPoints(){
 }
 
 window.saveSpotRate=function(){localStorage.setItem("spotRate",document.getElementById("spotRate").value)}
+function teacherFilteredStudents(){
+ const q=(document.getElementById("studentSearch")?.value||"").trim().toLowerCase();
+ const cls=document.getElementById("studentClassFilter")?.value||"";
+ const taskId=document.getElementById("studentTaskFilter")?.value||"";
+ const completion=document.getElementById("studentCompletionFilter")?.value||"";
+ const task=tasks.find(t=>String(t.id)===String(taskId));
+ return students.filter(s=>{
+   if(q&&!String(s.id+" "+s.name).toLowerCase().includes(q))return false;
+   if(cls&&String(s.class)!==cls)return false;
+   if(task&&completion){
+     const passed=taskPassed(s.id,task);
+     if(completion==="passed"&&!passed)return false;
+     if(completion==="unfinished"&&passed)return false;
+   }
+   return true;
+ });
+}
+function refreshTeacherFilters(){
+ const classes=[...new Set(students.map(s=>String(s.class||"")).filter(Boolean))].sort();
+ const cls=document.getElementById("studentClassFilter");
+ if(cls){
+   const prev=cls.value;
+   cls.innerHTML='<option value="">全部班级</option>'+classes.map(x=>`<option value="${escapeHtml(x)}">${escapeHtml(x)}</option>`).join("");
+   if(classes.includes(prev))cls.value=prev;
+ }
+ for(const id of ["studentTaskFilter","batchAttemptTask"]){
+   const el=document.getElementById(id);if(!el)continue;
+   const prev=el.value;
+   el.innerHTML=(id==="studentTaskFilter"?'<option value="">不按任务筛选</option>':'<option value="">选择要增加次数的任务</option>')+
+     tasks.map(t=>`<option value="${t.id}">${escapeHtml(t.title)}</option>`).join("");
+   if(tasks.some(t=>String(t.id)===String(prev)))el.value=prev;
+ }
+}
+function updateStudentSelectionStatus(){
+ const el=document.getElementById("studentSelectionStatus");
+ if(el)el.textContent=`已选择 ${selectedStudentIds.size} 名学生`;
+}
+window.toggleStudentSelection=function(id,checked){
+ if(checked)selectedStudentIds.add(String(id));else selectedStudentIds.delete(String(id));
+ updateStudentSelectionStatus();
+}
+window.selectVisibleStudents=function(){teacherFilteredStudents().forEach(s=>selectedStudentIds.add(String(s.id)));renderStudents()}
+window.clearStudentSelection=function(){selectedStudentIds.clear();renderStudents()}
 function renderStudents(){
  const box=document.getElementById("studentTable");
  if(!box)return;
+ refreshTeacherFilters();
+ const rows=teacherFilteredStudents();
  box.innerHTML=
- `<table><tr><th>ID</th><th>姓名</th><th>班级</th><th>账号状态</th><th>积分</th></tr>`+
- students.map(s=>{
+ `<table><tr><th>选择</th><th>ID</th><th>姓名</th><th>班级</th><th>账号状态</th><th>积分</th></tr>`+
+ rows.map(s=>{
    const state=s.needsPasswordReset?"待重新设置密码":(s.registered?"已注册":"未注册");
-   return `<tr><td>${escapeHtml(s.id)}</td><td>${escapeHtml(s.name)}</td><td>${escapeHtml(s.class)}</td><td>${state}</td><td>${s.points||0}</td></tr>`;
+   const checked=selectedStudentIds.has(String(s.id))?"checked":"";
+   return `<tr><td><input class="smallCheck" type="checkbox" ${checked} onchange="toggleStudentSelection('${String(s.id).replace(/'/g,"\\'")}',this.checked)"></td><td>${escapeHtml(s.id)}</td><td>${escapeHtml(s.name)}</td><td>${escapeHtml(s.class)}</td><td>${state}</td><td>${s.points||0}</td></tr>`;
  }).join("")+"</table>";
+ if(!rows.length)box.innerHTML='<div class="note">当前筛选条件下没有学生。</div>';
+ updateStudentSelectionStatus();
 }
+window.batchGrantAttempt=function(){
+ if(!teacherLoggedIn){alert("请先登录教师端");return}
+ const taskId=document.getElementById("batchAttemptTask")?.value||"";
+ const task=tasks.find(t=>String(t.id)===String(taskId));
+ if(!task){alert("请选择要增加次数的任务");return}
+ const ids=[...selectedStudentIds];
+ if(!ids.length){alert("请先勾选学生");return}
+ if(!confirm(`确认给已选 ${ids.length} 名学生的“${task.title}”各增加 1 次背诵机会吗？`))return;
+ const now=new Date().toISOString();
+ ids.forEach(id=>{
+   const s=students.find(x=>String(x.id)===String(id));if(!s)return;
+   approvals.unshift({id:"ba"+Date.now()+"-"+Math.random().toString(36).slice(2,7),studentId:s.id,studentName:s.name,taskId:task.id,taskTitle:task.title,requestedAt:now,processedAt:now,status:"approved",extraAttempts:1,batchGranted:true});
+ });
+ save();renderApprovals();renderStudents();alert(`已为 ${ids.length} 名学生各增加 1 次机会`);
+}
+window.copyTask=function(id){
+ if(!teacherLoggedIn){alert("请先登录教师端");return}
+ const t=tasks.find(x=>String(x.id)===String(id));if(!t)return;
+ const copy=JSON.parse(JSON.stringify(t));copy.id="t"+Date.now();copy.title=t.title+"（副本）";
+ tasks.push(copy);save();renderTasks();renderTaskTable();renderStudents();
+ alert("任务已复制，可点击“编辑”修改副本。");
+}
+function buildMistakeExportRows(){
+ const agg={};
+ Object.values(studentMistakes).forEach(x=>{
+   const k=String(x.word||"").toLowerCase();if(!k)return;
+   if(!agg[k])agg[k]={单词:x.word,中文:x.zh||"",累计错误:0,学生数:new Set()};
+   agg[k]["累计错误"]+=Number(x.count)||0;agg[k]["学生数"].add(String(x.studentId));
+ });
+ return Object.values(agg).sort((a,b)=>b["累计错误"]-a["累计错误"]).map(x=>({单词:x["单词"],中文:x["中文"],累计错误:x["累计错误"],涉及学生数:x["学生数"].size}));
+}
+window.exportTeacherExcel=function(){
+ if(!teacherLoggedIn){alert("请先登录教师端");return}
+ if(typeof XLSX==="undefined"){alert("Excel 组件尚未加载，请刷新页面后重试");return}
+ const wb=XLSX.utils.book_new();
+ const summary=[
+   ["导出时间",new Date().toLocaleString()],
+   ["学生数",students.length],
+   ["任务数",tasks.length],
+   ["背诵记录数",records.length],
+   ["待处理增加次数申请",approvals.filter(a=>a.status==="pending").length],
+   ["累计睁眼阈值",getEyeLimitMs()===0?"关闭":eyeLimitLabel()]
+ ];
+ XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(summary),"概览");
+ XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(students.map(s=>({
+   学生ID:s.id,姓名:s.name,班级:s.class,账号状态:s.needsPasswordReset?"待重置":(s.registered?"已注册":"未注册"),积分:s.points||0
+ }))),"学生");
+ XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(tasks.map(t=>({
+   任务ID:t.id,任务名称:t.title,类型:t.type==="word"?"单词":"课文",开始时间:t.startAt||"",截止时间:t.deadline||"",允许补交:t.allowLate?"是":"否",单词数:t.type==="word"?normalizeVocab(t).length:"",分段数:t.type==="text"?normalizeSections(t).length:"",内容:t.text||""
+ }))),"任务");
+ XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(records.map(r=>({
+   时间:r.time,学生ID:r.studentId,姓名:r.name,任务:r.task,准确率:r.score,结果:r.pass?"合格":"未合格",睁眼秒数:r.eyeOpenMs===undefined?"":(Number(r.eyeOpenMs)/1000).toFixed(1),闭眼违规:r.eyeViolation?"是":"否",抽查:r.spotCheck?"是":"否"
+ }))),"背诵记录");
+ XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(approvals.map(a=>({
+   申请时间:a.requestedAt,处理时间:a.processedAt||"",学生ID:a.studentId,姓名:a.studentName,任务:a.taskTitle,状态:a.status,增加次数:a.extraAttempts||0,批量发放:a.batchGranted?"是":"否"
+ }))),"次数审批");
+ XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(passwordResetRequests.map(r=>({
+   申请时间:r.requestedAt,处理时间:r.processedAt||"",学生ID:r.studentId,姓名:r.studentName,班级:r.class,状态:r.status
+ }))),"密码重置");
+ const mistakes=buildMistakeExportRows();
+ XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(mistakes.length?mistakes:[{提示:"当前浏览器暂无错词统计"}]),"错词统计");
+ XLSX.writeFile(wb,`英语背诵学习记录_${new Date().toISOString().slice(0,10)}.xlsx`);
+}
+
 window.toggleTaskEditor=function(){
  const type=document.getElementById("newTaskType")?.value||"word";
  document.getElementById("wordTaskEditor")?.classList.toggle("hidden",type!=="word");
@@ -974,6 +1299,10 @@ window.splitTextBySentence=function(){
 window.addTask=function(){
  const title=document.getElementById("newTaskTitle").value.trim();
  const type=document.getElementById("newTaskType").value;
+ const startAt=document.getElementById("newTaskStartAt")?.value||"";
+ const deadline=document.getElementById("newTaskDeadline")?.value||"";
+ const allowLate=!!document.getElementById("newTaskAllowLate")?.checked;
+ if(startAt&&deadline&&new Date(startAt)>=new Date(deadline)){alert("截止时间必须晚于开始时间");return}
  let text="",vocab=[];
  if(type==="word"){
    vocab=wordEditorItems.map(v=>({word:String(v.word||"").trim(),zh:String(v.zh||"").trim()})).filter(v=>v.word);
@@ -988,7 +1317,7 @@ window.addTask=function(){
    const task=tasks.find(t=>String(t.id)===String(editingTaskId));
    if(!task){alert("任务不存在");cancelTaskEdit();return}
    const oldTitle=task.title;
-   task.title=title; task.type=type; task.text=text;
+   task.title=title; task.type=type; task.text=text; task.startAt=startAt; task.deadline=deadline; task.allowLate=allowLate;
    if(type==="word"){task.vocab=vocab;delete task.sections;} else {delete task.vocab;task.sections=(sectionEditorItems.length?sectionEditorItems.map((s,i)=>({title:"第"+(i+1)+"段",text:String(s.text||"").trim()})).filter(s=>s.text):normalizeSections({type:"text",text}));}
    records.forEach(r=>{
      if((r.taskId && String(r.taskId)===String(task.id)) || (!r.taskId && r.task===oldTitle)) r.task=title;
@@ -997,12 +1326,13 @@ window.addTask=function(){
    save();cancelTaskEdit();renderTasks();renderTaskTable();renderRecords();renderPoints();
    alert("任务已修改");
  }else{
-   const task={id:"t"+Date.now(),title,type,text};
+   const task={id:"t"+Date.now(),title,type,text,startAt,deadline,allowLate};
    if(type==="word")task.vocab=vocab; else task.sections=(sectionEditorItems.length?sectionEditorItems.map((s,i)=>({title:"第"+(i+1)+"段",text:String(s.text||"").trim()})).filter(s=>s.text):normalizeSections(task));
    tasks.push(task);
    save();renderTasks();renderTaskTable();
    document.getElementById("newTaskTitle").value="";
    document.getElementById("newTaskText").value="";
+   document.getElementById("newTaskStartAt").value=""; document.getElementById("newTaskDeadline").value=""; document.getElementById("newTaskAllowLate").checked=false;
    wordEditorItems=[];sectionEditorItems=[];renderWordEditorRows();renderSectionEditorRows();
  }
 }
@@ -1014,6 +1344,9 @@ window.editTask=function(id){
  document.getElementById("newTaskTitle").value=task.title;
  document.getElementById("newTaskType").value=task.type;
  document.getElementById("newTaskText").value=task.type==="text"?task.text:"";
+ document.getElementById("newTaskStartAt").value=task.startAt||"";
+ document.getElementById("newTaskDeadline").value=task.deadline||"";
+ document.getElementById("newTaskAllowLate").checked=!!task.allowLate;
  wordEditorItems=task.type==="word"?normalizeVocab(task).map(v=>({...v})):[];
  sectionEditorItems=task.type==="text"?normalizeSections(task).map(s=>({...s})):[];
  renderWordEditorRows();renderSectionEditorRows();toggleTaskEditor();
@@ -1027,6 +1360,7 @@ window.cancelTaskEdit=function(){
  editingTaskId=null;wordEditorItems=[];sectionEditorItems=[];
  const title=document.getElementById("newTaskTitle"), text=document.getElementById("newTaskText");
  if(title)title.value=""; if(text)text.value="";
+ const st=document.getElementById("newTaskStartAt"),dl=document.getElementById("newTaskDeadline"),al=document.getElementById("newTaskAllowLate"); if(st)st.value=""; if(dl)dl.value=""; if(al)al.checked=false;
  const en=document.getElementById("wordInputEn"),zh=document.getElementById("wordInputZh");
  if(en)en.value="";if(zh)zh.value="";
  renderWordEditorRows();renderSectionEditorRows();
@@ -1059,8 +1393,9 @@ function renderTaskTable(){
    return `
    <div class="task">
      <div class="row" style="align-items:center">
-       <div style="flex:2"><b>${escapeHtml(t.title)}</b><div class="note">${t.type==="word"?"单词":"课文"} · ${count} 个${t.type==="word"?"单词":"词"}${t.type==="text"&&sections.length>1?" · "+sections.length+"段":""}</div></div>
+       <div style="flex:2"><b>${escapeHtml(t.title)}</b><div class="note">${t.type==="word"?"单词":"课文"} · ${count} 个${t.type==="word"?"单词":"词"}${t.type==="text"&&sections.length>1?" · "+sections.length+"段":""}</div><div class="note">开始：${escapeHtml(fmtTaskTime(t.startAt))} ｜ 截止：${escapeHtml(fmtTaskTime(t.deadline))}${t.allowLate?" ｜ 可补交":""}</div></div>
        <button class="secondary" onclick="editTask('${t.id}')">编辑</button>
+       <button class="secondary" onclick="copyTask('${t.id}')">复制</button>
        <button class="badBtn" onclick="deleteTask('${t.id}')">删除</button>
      </div>
      <details style="margin-top:8px">
@@ -1144,6 +1479,10 @@ function renderRecords(){
 
 // ===== 免登录：老人听障语音转文字 =====
 window.openHearingMode=function(){
+ if(!teacherLoggedIn||!teacherToken){
+   alert("请先登录教师端后再使用听障语音转文字。");
+   return;
+ }
  const ov=document.getElementById("hearingOverlay");
  ov?.classList.add("open");ov?.setAttribute("aria-hidden","false");
  document.body.style.overflow="hidden";
@@ -1165,6 +1504,7 @@ window.clearHearingText=function(){
  const el=document.getElementById("hearingText");if(el)el.textContent="这里会实时显示说话内容。";
 }
 window.startHearingRecognition=function(){
+ if(!teacherLoggedIn||!teacherToken){alert("教师登录已失效，请重新登录。");closeHearingMode();return}
  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
  const status=document.getElementById("hearingStatus"),textBox=document.getElementById("hearingText");
  if(!SR){status.textContent="当前浏览器不支持实时语音识别，建议使用 Chrome / Edge。";status.className="status bad";return}
@@ -1282,7 +1622,7 @@ window.nextSpellingWord=function(){
 }
 
 function escapeHtml(s){return String(s).replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]))}
-function renderAll(){renderTasks();renderStudents();renderTaskTable();renderRecords();renderApprovals();renderPasswordResetRequests();renderPoints();updateGate();renderTaskAttemptStatus();renderWordEditorRows();renderSectionEditorRows();toggleTaskEditor();renderMistakeBook();renderTeacherMistakeStats();renderSectionStudy();}
+function renderAll(){renderTasks();renderStudents();renderTaskTable();renderRecords();renderApprovals();renderPasswordResetRequests();renderPoints();updateEyeLimitUI();updateGate();renderTaskAttemptStatus();renderWordEditorRows();renderSectionEditorRows();toggleTaskEditor();renderMistakeBook();renderTeacherMistakeStats();renderSectionStudy();renderTaskDeadlineStatus();refreshTeacherFilters();}
 renderAll();
 updateTeacherVisibility();
 

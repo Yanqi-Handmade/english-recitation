@@ -15,6 +15,7 @@
    teacherLogin:(u,p)=>req("/teacher/login",{method:"POST",body:{username:u,password:p}}),
    teacherState:t=>req("/teacher/state",{token:t}),
    teacherSaveState:(t,s)=>req("/teacher/state",{method:"POST",token:t,body:s}),
+   teacherReplaceRoster:(t,s)=>req("/teacher/state",{method:"POST",token:t,body:{...s,rosterReplace:true}}),
    studentLogin:(id,password)=>req("/student/login",{method:"POST",body:{id,password}}),
    studentRegister:b=>req("/student/register",{method:"POST",body:b}),
    studentState:t=>req("/student/state",{token:t}),

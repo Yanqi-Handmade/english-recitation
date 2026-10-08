@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>英语背诵打卡 v7.5</title>
+<title>英语背诵打卡 v7.9</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
 *{box-sizing:border-box}
@@ -73,6 +73,17 @@ a.btn{display:inline-block;border:0;border-radius:12px;padding:12px 16px;backgro
 .sectionEditorRows{display:grid;gap:8px;margin-top:10px}
 .sectionEditorRow{display:grid;grid-template-columns:auto 1fr auto;gap:8px;align-items:start}
 .sectionEditorRow textarea{min-height:80px}
+
+.teacherToolbar{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:8px;margin:10px 0}
+.teacherToolbar .wide{grid-column:span 2}
+.batchBar{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+.settingsGrid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.smallCheck{width:18px;height:18px}
+@media(max-width:700px){
+ .teacherToolbar{grid-template-columns:1fr 1fr}
+ .teacherToolbar .wide{grid-column:span 2}
+ .settingsGrid{grid-template-columns:1fr}
+}
 @media(max-width:640px){
  .mistakeRow{grid-template-columns:1fr 1fr}
  .sectionEditorRow{grid-template-columns:1fr}
@@ -86,7 +97,7 @@ a.btn{display:inline-block;border:0;border-radius:12px;padding:12px 16px;backgro
 </style>
 </head>
 <body>
-<header>英语背诵打卡 · v7.5 学习体验版</header>
+<header>英语背诵打卡 · v7.9 教师信任设备版</header>
 <main>
 
 <div class="card tabs">
@@ -200,6 +211,7 @@ a.btn{display:inline-block;border:0;border-radius:12px;padding:12px 16px;backgro
       </div>
       <div id="sectionList" class="sectionList"></div>
     </div>
+    <div id="taskDeadlineStatus" class="status">请选择任务查看时间要求。</div>
     <div id="taskAttemptStatus" class="status">登录后可查看本任务背诵次数。</div>
     <div id="attemptRequestBox"></div>
     <p class="note">每名学生每个任务默认最多背诵 3 次；本任务最多获得 1 分。次数用完仍未通过时，可申请老师增加次数。</p>
@@ -239,12 +251,6 @@ a.btn{display:inline-block;border:0;border-radius:12px;padding:12px 16px;backgro
 </section>
 
 <section id="teacher" class="hidden">
-  <div class="card accessEntry">
-    <h2>👂 老人听障 · 语音转文字</h2>
-    <p class="note">无需教师登录。点击后进入全屏大字转写，适合面对面交流；可随时放大/缩小文字。</p>
-    <button onclick="openHearingMode()">进入全屏语音转文字</button>
-  </div>
-
   <div id="teacherLoginCard" class="card">
     <h2>教师端登录</h2>
     <div class="row">
@@ -253,10 +259,16 @@ a.btn{display:inline-block;border:0;border-radius:12px;padding:12px 16px;backgro
     </div>
     <button style="margin-top:10px" onclick="teacherLogin()">登录教师端</button>
     <div id="teacherLoginMsg" class="status">未登录</div>
+    <p class="note">本设备登录成功后会记住教师身份 30 天；主动点击“退出教师端”会清除免密登录。</p>
     <p class="note">测试默认账号：admin，密码：123456。正式联网版会改成服务端账号认证。</p>
   </div>
 
   <div id="teacherProtected" class="hidden">
+  <div class="card accessEntry">
+    <h2>👂 老人听障 · 语音转文字</h2>
+    <p class="note">仅教师登录后可使用。点击后进入全屏大字转写，适合面对面交流；可随时放大/缩小文字。</p>
+    <button onclick="openHearingMode()">进入全屏语音转文字</button>
+  </div>
   <div class="card">
     <h2>学生名录 XLSX 导入</h2>
     <div class="row">
@@ -289,22 +301,59 @@ a.btn{display:inline-block;border:0;border-radius:12px;padding:12px 16px;backgro
 
   <div class="card">
     <h2>教师端设置</h2>
-    <label>随机抽查概率</label>
-    <select id="spotRate" onchange="saveSpotRate()">
-      <option value="0">0%</option>
-      <option value="0.1">10%</option>
-      <option value="0.2" selected>20%</option>
-      <option value="0.3">30%</option>
-      <option value="0.5">50%</option>
-    </select>
-    <p class="note">原型仅记录“需要抽查”标记；正式版再接云存储上传短视频给老师审核。</p>
+    <div class="settingsGrid">
+      <div>
+        <label>随机抽查概率</label>
+        <select id="spotRate" onchange="saveSpotRate()">
+          <option value="0">0%</option>
+          <option value="0.1">10%</option>
+          <option value="0.2" selected>20%</option>
+          <option value="0.3">30%</option>
+          <option value="0.5">50%</option>
+        </select>
+      </div>
+      <div>
+        <label>背诵累计睁眼阈值</label>
+        <select id="eyeLimitPreset" onchange="changeEyeLimitPreset()">
+          <option value="0">关闭闭眼限制</option>
+          <option value="1000">严格：1 秒</option>
+          <option value="3000" selected>标准：3 秒</option>
+          <option value="5000">宽松：5 秒</option>
+          <option value="custom">自定义</option>
+        </select>
+        <div id="eyeLimitCustomWrap" class="hidden" style="margin-top:8px">
+          <input id="eyeLimitCustom" type="number" min="0.5" max="30" step="0.5" placeholder="自定义秒数，例如 4.5">
+          <button type="button" style="margin-top:8px" onclick="saveCustomEyeLimit()">保存自定义阈值</button>
+        </div>
+        <div id="eyeLimitStatus" class="status">当前：标准 3 秒</div>
+      </div>
+    </div>
+    <p class="note">闭眼阈值会同步到腾讯云并应用到学生端。选择“关闭”时仍保留账号、随机口令和活体检测，但不要求睁眼/闭眼校准。</p>
   </div>
 
   <div class="card">
-    <h2>学生列表</h2>
-    <div class="row" style="margin-bottom:10px">
+    <h2>学生列表 · 批量管理</h2>
+    <div id="cloudRosterSummary" class="status">云端学生：读取中…</div>
+    <p class="note">已启用云端名册防误覆盖：学生端不会修改全班名单；教师普通同步只新增/更新，不会因为本地缓存缺少学生而自动删掉云端学生。</p>
+    <div class="teacherToolbar">
+      <input id="studentSearch" placeholder="搜索姓名 / ID" oninput="renderStudents()">
+      <select id="studentClassFilter" onchange="renderStudents()"><option value="">全部班级</option></select>
+      <select id="studentTaskFilter" onchange="renderStudents()"><option value="">不按任务筛选</option></select>
+      <select id="studentCompletionFilter" onchange="renderStudents()">
+        <option value="">全部学习状态</option>
+        <option value="passed">已完成/已合格</option>
+        <option value="unfinished">未完成</option>
+      </select>
+    </div>
+    <div class="batchBar">
+      <button class="secondary" onclick="selectVisibleStudents()">全选当前筛选</button>
+      <button class="secondary" onclick="clearStudentSelection()">取消选择</button>
+      <select id="batchAttemptTask" style="max-width:280px"></select>
+      <button class="good" onclick="batchGrantAttempt()">给已选学生 +1 次机会</button>
+      <button onclick="exportTeacherExcel()">⬇ 导出 Excel</button>
       <button class="secondary" onclick="clearStudents()">清空学生名单</button>
     </div>
+    <div id="studentSelectionStatus" class="status">已选择 0 名学生</div>
     <div id="studentTable" class="tablewrap"></div>
   </div>
 
@@ -317,6 +366,20 @@ a.btn{display:inline-block;border:0;border-radius:12px;padding:12px 16px;backgro
         <option value="text">课文</option>
       </select>
     </div>
+    <div class="row" style="margin-top:10px">
+      <div>
+        <label>开始时间（可选）</label>
+        <input id="newTaskStartAt" type="datetime-local">
+      </div>
+      <div>
+        <label>截止完成时间（可选）</label>
+        <input id="newTaskDeadline" type="datetime-local">
+      </div>
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:10px">
+      <input id="newTaskAllowLate" type="checkbox" class="smallCheck">
+      截止后仍允许补交
+    </label>
 
     <div id="wordTaskEditor" style="margin-top:10px">
       <p class="note">单词任务请一个一个添加。每行保存“英文单词 + 中文释义”，学生端会一行显示一个单词。</p>

@@ -345,7 +345,7 @@ function updateEyeUI(state){
 
   if(eyeSession.violation){
     box.className="status bad";
-    box.textContent="累计睁眼已超过 3 秒，本次自动判为未通过";
+    box.textContent=`累计睁眼已超过 ${(eyeSession.maxOpenMs/1000).toFixed(1)} 秒，本次自动判为未通过`;
   }else if(state==="closed"){
     box.className="status ok";
     box.textContent="检测正常：已识别为闭眼";
