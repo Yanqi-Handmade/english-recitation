@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>英语背诵打卡 v8.0</title>
+<title>英语背诵打卡 v8.1</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
 *{box-sizing:border-box}
@@ -81,6 +81,16 @@ a.btn{display:inline-block;border:0;border-radius:12px;padding:12px 16px;backgro
 
 .studentHero{background:linear-gradient(135deg,#eff6ff,#f5f3ff);border:1px solid #dbeafe}
 .studentHeroActions{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
+
+.rememberedAccounts{display:grid;gap:10px;margin-top:12px}
+.rememberedAccount{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;border:1px solid #e5e7eb;border-radius:14px;padding:12px;background:#fff}
+.rememberedAccount.active{border-color:#93c5fd;background:#eff6ff}
+.rememberedMeta{color:#64748b;font-size:13px;margin-top:4px}
+.accountActions{display:flex;gap:8px;flex-wrap:wrap}
+.accountManager{margin-top:14px;border-top:1px solid #e5e7eb;padding-top:12px}
+@media(max-width:640px){
+ .rememberedAccount{grid-template-columns:1fr}
+}
 .learningGrid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 .learningCard{border:1px solid #e5e7eb;border-radius:16px;padding:14px;background:#fff}
 .learningCard h3{margin-top:0}
@@ -114,7 +124,7 @@ a.btn{display:inline-block;border:0;border-radius:12px;padding:12px 16px;backgro
 </style>
 </head>
 <body>
-<header>英语背诵打卡 · v8.0 学生学习首页版</header>
+<header>英语背诵打卡 · v8.1 家庭多学生版</header>
 <main>
 
 <div class="card tabs">
@@ -132,17 +142,32 @@ a.btn{display:inline-block;border:0;border-radius:12px;padding:12px 16px;backgro
       <div class="studentHeroActions">
         <button onclick="scrollToStudentArea('wordLearningCard')">📚 背单词</button>
         <button onclick="scrollToStudentArea('textLearningCard')">📖 背课文</button>
-        <button class="secondary" onclick="studentLogout()">退出账号</button>
+        <button class="secondary" onclick="openStudentSwitcher()">切换学生</button>
+        <button class="secondary" onclick="studentLogout()">退出当前学生</button>
       </div>
     </div>
 
-    <div id="studentLoginArea">
-      <h2>学生登录</h2>
+    <div id="studentSwitcherArea" class="hidden accountManager">
+      <h3>本设备已记住的学生</h3>
+      <p class="note">这里保存的是登录凭证，不保存明文密码。有效期内可直接切换学生。</p>
+      <div id="rememberedStudentList" class="rememberedAccounts"></div>
+      <div class="row" style="margin-top:12px">
+        <button onclick="showAddStudentLogin()">＋ 添加其他学生</button>
+        <button class="secondary" onclick="closeStudentSwitcher()">收起</button>
+        <button class="badBtn" onclick="clearAllRememberedStudents()">清除此设备全部学生账号</button>
+      </div>
+    </div>
+
+    <div id="studentLoginArea" class="hidden">
+      <h2 id="studentLoginTitle">学生登录</h2>
       <div class="row">
         <input id="studentId" placeholder="学生 ID，例如 30101">
         <input id="studentPassword" type="password" placeholder="自己设置的登录密码">
       </div>
-      <button style="margin-top:10px" onclick="login()">登录</button>
+      <div class="row" style="margin-top:10px">
+        <button onclick="login()">登录并记住此学生</button>
+        <button id="cancelStudentLoginBtn" class="secondary hidden" onclick="cancelStudentLoginForm()">取消</button>
+      </div>
       <div id="loginMsg" class="status">未登录</div>
       <div class="row" style="margin-top:10px">
         <button id="showRegistrationBtn" class="secondary" onclick="toggleRegistrationArea()">首次使用 / 老师已批准重置密码</button>
@@ -170,7 +195,7 @@ a.btn{display:inline-block;border:0;border-radius:12px;padding:12px 16px;backgro
       <div id="registerMsg" class="status">尚未设置</div>
     </div>
 
-    <div id="forgotArea">
+    <div id="forgotArea" class="hidden">
       <hr style="border:0;border-top:1px solid #eee;margin:18px 0">
       <details>
         <summary style="cursor:pointer;font-weight:800">忘记密码？申请老师重置</summary>

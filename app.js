@@ -30,10 +30,27 @@ let studentMistakes=JSON.parse(localStorage.getItem("v75mistakes")||"{}");
 let appSettings=JSON.parse(localStorage.getItem("v76settings")||"null")||{eyeLimitMs:3000};
 let selectedStudentIds=new Set();
 let teacherToken=localStorage.getItem("teacherTokenPersistent")||sessionStorage.getItem("teacherToken")||"";
-let studentToken=localStorage.getItem("studentTokenPersistent")||sessionStorage.getItem("studentToken")||"";
-let persistentStudentId=localStorage.getItem("studentPersistentId")||"";
+let rememberedStudents=JSON.parse(localStorage.getItem("studentAccountsV81")||"{}");
+let activeStudentId=localStorage.getItem("activeStudentIdV81")||"";
+let studentToken="";
+let persistentStudentId="";
 let cloudSyncTimer=null,suppressCloudSave=false,cloudReadyForTeacherSave=false;
 let teacherLoggedIn=!!teacherToken;
+
+// 从旧版单学生持久登录自动迁移到 v8.1 多学生账号列表（不保存密码）
+(function migrateLegacyStudentLogin(){
+ const oldToken=localStorage.getItem("studentTokenPersistent")||sessionStorage.getItem("studentToken")||"";
+ const oldId=localStorage.getItem("studentPersistentId")||"";
+ if(oldToken&&oldId&&!rememberedStudents[String(oldId)]){
+   rememberedStudents[String(oldId)]={id:String(oldId),token:oldToken,name:"",class:"",lastUsedAt:new Date().toISOString()};
+   localStorage.setItem("studentAccountsV81",JSON.stringify(rememberedStudents));
+   if(!activeStudentId){activeStudentId=String(oldId);localStorage.setItem("activeStudentIdV81",activeStudentId)}
+ }
+ // 旧版单账号键不再作为登录源，避免和多学生列表冲突
+ localStorage.removeItem("studentTokenPersistent");
+ localStorage.removeItem("studentPersistentId");
+ sessionStorage.removeItem("studentToken");
+})();
 
 function save(){
  localStorage.setItem("v5students",JSON.stringify(students));
@@ -101,6 +118,7 @@ async function loadStudentCloudState(){
  suppressCloudSave=true;
  try{
    current=d.profile||current;
+   if(current&&studentToken)rememberStudentAccount(current,studentToken);
    tasks=d.tasks||[];
    records=d.records||[];
    approvals=d.approvals||[];
@@ -113,43 +131,53 @@ async function loadStudentCloudState(){
 }
 async function initCloud(){
  cloudReadyForTeacherSave=false;
- if(!window.CloudAPI?.configured()){setCloudStatus("尚未配置腾讯云：请编辑 config.js","warn");return}
+ if(!window.CloudAPI?.configured()){setCloudStatus("尚未配置腾讯云：请编辑 config.js","warn");updateStudentAccountUI();return}
  try{
    const h=await CloudAPI.request("/health");setCloudStatus("腾讯云已连接 · "+(h.storage||"COS"),"ok");
    if(teacherToken){
-     // 当前 tab 如果已有教师会话，教师身份优先，并清除学生身份，避免双身份并存。
-     studentToken="";persistentStudentId="";
+     // 教师身份优先；仅退出当前学生会话，不删除家庭已记住的学生列表
+     studentToken="";persistentStudentId="";current=null;loginOk=false;
      sessionStorage.removeItem("studentToken");
-     localStorage.removeItem("studentTokenPersistent");
-     localStorage.removeItem("studentPersistentId");
      try{
-       teacherLoggedIn=true;
-       await loadTeacherCloudState();
-       updateTeacherVisibility();
-       return;
+       teacherLoggedIn=true;await loadTeacherCloudState();updateTeacherVisibility();updateStudentAccountUI();return;
      }catch(e){
        teacherToken="";teacherLoggedIn=false;cloudReadyForTeacherSave=false;
-       sessionStorage.removeItem("teacherToken");
-       localStorage.removeItem("teacherTokenPersistent");
+       sessionStorage.removeItem("teacherToken");localStorage.removeItem("teacherTokenPersistent");
      }
    }
-   if(studentToken){
+
+   // 优先恢复上次使用的学生，其次尝试本设备其他已记住学生
+   const accounts=rememberedStudentArray();
+   const ordered=[];
+   if(activeStudentId&&rememberedStudents[String(activeStudentId)])ordered.push(rememberedStudents[String(activeStudentId)]);
+   accounts.forEach(a=>{if(!ordered.some(x=>String(x.id)===String(a.id)))ordered.push(a)});
+   for(const acc of ordered){
+     if(!acc.token)continue;
+     studentToken=acc.token;persistentStudentId=String(acc.id);activeStudentId=String(acc.id);
+     sessionStorage.setItem("studentToken",studentToken);
      try{
        teacherLoggedIn=false;teacherToken="";cloudReadyForTeacherSave=false;
-       sessionStorage.removeItem("teacherToken");
+       sessionStorage.removeItem("teacherToken");localStorage.removeItem("teacherTokenPersistent");
        await loadStudentCloudState();
        loginOk=!!current;
-       const msg=document.getElementById("loginMsg");
-       if(msg&&current){msg.textContent=`本设备已自动登录：${current.name}（${current.class}）`;msg.className="status ok"}
-       updateGate();
+       if(current){
+         rememberStudentAccount(current,studentToken);
+         const msg=document.getElementById("loginMsg");
+         if(msg){msg.textContent=`本设备已自动登录：${current.name}（${current.class}）`;msg.className="status ok"}
+         updateGate();updateStudentAccountUI();return;
+       }
      }catch(e){
-       studentToken="";persistentStudentId="";
-       sessionStorage.removeItem("studentToken");
-       localStorage.removeItem("studentTokenPersistent");
-       localStorage.removeItem("studentPersistentId");
+       // 只标记这个学生 token 失效，继续尝试其他已记住学生
+       rememberedStudents[String(acc.id)]={...acc,token:""};
+       saveRememberedStudents();
+       studentToken="";current=null;loginOk=false;
      }
    }
- }catch(e){setCloudStatus("腾讯云连接失败："+friendlyCloudError(e),"bad")}
+   updateStudentAccountUI();
+ }catch(e){
+   setCloudStatus("腾讯云连接失败："+friendlyCloudError(e),"bad");
+   updateStudentAccountUI();
+ }
 }
 
 // ===== v5.4 学生账号数据兼容：保留旧版已注册账号 =====
@@ -230,6 +258,136 @@ window.stopCamera=function(preserveVerification=false){
 };
 
 
+
+function saveRememberedStudents(){
+ localStorage.setItem("studentAccountsV81",JSON.stringify(rememberedStudents));
+ if(activeStudentId)localStorage.setItem("activeStudentIdV81",String(activeStudentId));
+ else localStorage.removeItem("activeStudentIdV81");
+}
+function rememberStudentAccount(profile,token){
+ if(!profile?.id||!token)return;
+ const id=String(profile.id);
+ rememberedStudents[id]={
+   ...(rememberedStudents[id]||{}),
+   id,
+   token,
+   name:profile.name||rememberedStudents[id]?.name||"",
+   class:profile.class||rememberedStudents[id]?.class||"",
+   lastUsedAt:new Date().toISOString()
+ };
+ activeStudentId=id;
+ saveRememberedStudents();
+}
+function forgetStudentAccount(id){
+ id=String(id||"");if(!id)return;
+ delete rememberedStudents[id];
+ if(String(activeStudentId)===id)activeStudentId="";
+ saveRememberedStudents();
+}
+function rememberedStudentArray(){
+ return Object.values(rememberedStudents).sort((a,b)=>String(b.lastUsedAt||"").localeCompare(String(a.lastUsedAt||"")));
+}
+function renderRememberedStudents(){
+ const box=document.getElementById("rememberedStudentList");if(!box)return;
+ const rows=rememberedStudentArray();
+ if(!rows.length){
+   box.innerHTML='<div class="note">这台设备还没有记住任何学生账号。</div>';
+   return;
+ }
+ box.innerHTML=rows.map(a=>{
+   const active=current&&String(current.id)===String(a.id);
+   const label=a.name?escapeHtml(a.name):("学生 "+escapeHtml(a.id));
+   return `<div class="rememberedAccount ${active?"active":""}">
+     <div><b>${label}</b><div class="rememberedMeta">${escapeHtml(a.class||"")} · ID ${escapeHtml(a.id)}${active?" · 当前学生":""}</div></div>
+     <div class="accountActions">
+       <button onclick="switchRememberedStudent('${String(a.id).replace(/'/g,"\\'")}')">${active?"当前":"切换"}</button>
+       <button class="badBtn" onclick="removeRememberedStudent('${String(a.id).replace(/'/g,"\\'")}')">从本设备移除</button>
+     </div>
+   </div>`;
+ }).join("");
+}
+function showStudentLoginForm(prefillId="",title="学生登录"){
+ const area=document.getElementById("studentLoginArea"),cancel=document.getElementById("cancelStudentLoginBtn");
+ area?.classList.remove("hidden");
+ if(cancel)cancel.classList.toggle("hidden",rememberedStudentArray().length===0);
+ const t=document.getElementById("studentLoginTitle");if(t)t.textContent=title;
+ const id=document.getElementById("studentId"),pw=document.getElementById("studentPassword");
+ if(id)id.value=prefillId||"";if(pw)pw.value="";
+ document.getElementById("forgotArea")?.classList.remove("hidden");
+ setTimeout(()=>prefillId?pw?.focus():id?.focus(),30);
+}
+window.showAddStudentLogin=function(){
+ closeStudentSwitcher();
+ showStudentLoginForm("","添加其他学生");
+}
+window.cancelStudentLoginForm=function(){
+ if(current&&studentToken){
+   document.getElementById("studentLoginArea")?.classList.add("hidden");
+   document.getElementById("forgotArea")?.classList.add("hidden");
+ }else if(rememberedStudentArray().length){
+   document.getElementById("studentLoginArea")?.classList.add("hidden");
+   document.getElementById("forgotArea")?.classList.add("hidden");
+   openStudentSwitcher();
+ }
+}
+window.openStudentSwitcher=function(){
+ renderRememberedStudents();
+ document.getElementById("studentSwitcherArea")?.classList.remove("hidden");
+}
+window.closeStudentSwitcher=function(){document.getElementById("studentSwitcherArea")?.classList.add("hidden")}
+window.switchRememberedStudent=async function(id){
+ id=String(id||"");const acc=rememberedStudents[id];if(!acc)return;
+ if(current&&String(current.id)===id&&studentToken){closeStudentSwitcher();return}
+ if(!acc.token){
+   closeStudentSwitcher();showStudentLoginForm(id,`重新登录 ${acc.name||id}`);return;
+ }
+ // 切学生时清空本次课文核验状态，但保留账号记忆
+ current=null;loginOk=secondOk=phraseOk=liveOk=false;eyeCalibrationReady=sessionVerificationReady=false;
+ studentToken=acc.token;persistentStudentId=id;activeStudentId=id;
+ sessionStorage.setItem("studentToken",studentToken);saveRememberedStudents();
+ try{
+   await loadStudentCloudState();
+   if(current){
+     rememberStudentAccount(current,studentToken);
+     closeStudentSwitcher();updateStudentAccountUI();
+   }
+ }catch(e){
+   // token 失效：仅清除此学生的 token，不影响其他孩子
+   rememberedStudents[id]={...acc,token:""};
+   saveRememberedStudents();
+   studentToken="";current=null;loginOk=false;
+   closeStudentSwitcher();
+   showStudentLoginForm(id,`登录已过期，请重新登录 ${acc.name||id}`);
+   const msg=document.getElementById("loginMsg");if(msg){msg.textContent="这个学生的免密登录已过期，请重新输入密码。";msg.className="status warn"}
+ }
+ updateGate();renderPoints();renderWordTasks();renderTasks();renderRememberedStudents();
+}
+window.removeRememberedStudent=function(id){
+ id=String(id||"");const acc=rememberedStudents[id];if(!acc)return;
+ if(!confirm(`确认从本设备移除“${acc.name||id}”吗？不会删除云端学生账号和学习记录。`))return;
+ const wasCurrent=current&&String(current.id)===id;
+ forgetStudentAccount(id);
+ if(wasCurrent){
+   studentToken="";persistentStudentId="";current=null;loginOk=secondOk=phraseOk=liveOk=false;eyeCalibrationReady=sessionVerificationReady=false;
+   sessionStorage.removeItem("studentToken");
+ }
+ renderRememberedStudents();updateStudentAccountUI();updateGate();renderPoints();
+ if(wasCurrent){
+   const next=rememberedStudentArray()[0];
+   if(next)switchRememberedStudent(next.id);
+   else showStudentLoginForm("","学生登录");
+ }
+}
+window.clearAllRememberedStudents=function(){
+ if(!rememberedStudentArray().length)return;
+ if(!confirm("确认清除此设备记住的全部学生账号吗？云端学生资料和学习记录不会删除。"))return;
+ rememberedStudents={};activeStudentId="";studentToken="";persistentStudentId="";current=null;
+ loginOk=secondOk=phraseOk=liveOk=false;eyeCalibrationReady=sessionVerificationReady=false;
+ sessionStorage.removeItem("studentToken");saveRememberedStudents();
+ closeStudentSwitcher();updateStudentAccountUI();updateGate();renderPoints();
+ showStudentLoginForm("","学生登录");
+}
+
 window.toggleRegistrationArea=function(force){
  const box=document.getElementById("registrationArea");if(!box)return;
  const show=typeof force==="boolean"?force:box.classList.contains("hidden");
@@ -243,14 +401,26 @@ function updateStudentAccountUI(){
  const reg=document.getElementById("registrationArea");
  const forgot=document.getElementById("forgotArea");
  welcome?.classList.toggle("hidden",!logged);
- loginArea?.classList.toggle("hidden",logged);
- forgot?.classList.toggle("hidden",logged);
  if(logged){
+   loginArea?.classList.add("hidden");
+   forgot?.classList.add("hidden");
    reg?.classList.add("hidden");
    const t=document.getElementById("studentWelcomeText"),m=document.getElementById("studentWelcomeMeta");
    if(t)t.textContent=`👋 ${current.name||"同学"}，欢迎回来`;
-   if(m)m.textContent=`${current.class||""} · 学生ID ${current.id||""} · 本设备已自动记住登录`;
+   if(m)m.textContent=`${current.class||""} · 学生ID ${current.id||""} · 本设备已记住此学生登录`;
+ }else{
+   const remembered=rememberedStudentArray();
+   if(remembered.length){
+     loginArea?.classList.add("hidden");
+     forgot?.classList.add("hidden");
+     renderRememberedStudents();
+     document.getElementById("studentSwitcherArea")?.classList.remove("hidden");
+   }else{
+     document.getElementById("studentSwitcherArea")?.classList.add("hidden");
+     showStudentLoginForm("","学生登录");
+   }
  }
+ renderRememberedStudents();
 }
 
 // ===== 教师端登录（腾讯云） =====
@@ -262,8 +432,6 @@ window.teacherLogin=async function(){
    // 教师与学生会话互斥
    studentToken="";persistentStudentId="";current=null;loginOk=false;
    sessionStorage.removeItem("studentToken");
-   localStorage.removeItem("studentTokenPersistent");
-   localStorage.removeItem("studentPersistentId");
    teacherToken=d.token;
    sessionStorage.setItem("teacherToken",teacherToken);
    localStorage.setItem("teacherTokenPersistent",teacherToken);
@@ -428,17 +596,15 @@ window.login=async function(){
    localStorage.removeItem("teacherTokenPersistent");
    studentToken=d.token;
    sessionStorage.setItem("studentToken",studentToken);
-   localStorage.setItem("studentTokenPersistent",studentToken);
-   localStorage.setItem("studentPersistentId",String(id));
    persistentStudentId=String(id);
    current=d.profile;loginOk=true;secondOk=phraseOk=liveOk=false;eyeCalibrationReady=sessionVerificationReady=false;
-   msg.textContent=`登录成功：${current.name}（${current.class}），本设备已记住登录`;msg.className="status ok";
+   rememberStudentAccount(current,studentToken);
+   msg.textContent=`登录成功：${current.name}（${current.class}），本设备已记住此学生登录`;msg.className="status ok";
    await loadStudentCloudState();
  }catch(e){
    studentToken="";persistentStudentId="";
    sessionStorage.removeItem("studentToken");
-   localStorage.removeItem("studentTokenPersistent");
-   localStorage.removeItem("studentPersistentId");
+   if(rememberedStudents[String(id)]){rememberedStudents[String(id)]={...rememberedStudents[String(id)],token:""};saveRememberedStudents()}
    current=null;loginOk=false;const c=e?.data?.code;
    msg.textContent=c==="NOT_REGISTERED"?"该学生尚未注册，请先设置密码":c==="NEEDS_RESET"?"老师已批准重置，请重新设置密码":"学生ID或密码错误";msg.className="status bad";
    if(c==="NOT_REGISTERED"||c==="NEEDS_RESET"){
@@ -449,11 +615,11 @@ window.login=async function(){
  updateGate();renderPoints();renderTaskAttemptStatus();updateStudentAccountUI();
 }
 window.studentLogout=function(){
+ // 只退出当前学生界面；保留本设备对该学生和其他学生的记忆凭证
  studentToken="";persistentStudentId="";current=null;loginOk=secondOk=phraseOk=liveOk=false;eyeCalibrationReady=sessionVerificationReady=false;
  sessionStorage.removeItem("studentToken");
- localStorage.removeItem("studentTokenPersistent");
- localStorage.removeItem("studentPersistentId");
- const msg=document.getElementById("loginMsg");if(msg){msg.textContent="已退出学生账号";msg.className="status"}
+ try{window.stopCamera?.()}catch(e){}
+ const msg=document.getElementById("loginMsg");if(msg){msg.textContent="已退出当前学生，可从本设备学生列表再次进入";msg.className="status"}
  updateGate();renderPoints();renderTaskAttemptStatus();renderWordTasks();updateStudentAccountUI();
 }
 
@@ -465,7 +631,7 @@ window.registerStudentAccount=async function(){
  if(!/^\d{4,6}$/.test(b.parentPin)){msg.textContent="家长PIN需4-6位数字";msg.className="status bad";return}
  try{
    await CloudAPI.studentRegister(b);
-   msg.textContent="设置成功，请用刚设置的密码登录；登录成功后本设备会自动记住。";msg.className="status ok";
+   msg.textContent="设置成功，请用刚设置的密码登录；登录成功后会加入本设备学生列表。";msg.className="status ok";
    document.getElementById("studentId").value=b.id;
    document.getElementById("studentPassword").value="";
    setTimeout(()=>toggleRegistrationArea(false),900);
